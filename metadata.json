@@ -1,0 +1,6 @@
+{
+  "name": "Sheru Bhai: GHOP GHOP Meme World",
+  "description": "An open-world 3D Kerala-inspired comedy adventure starring Sheru Bhai, a wealthy anthropomorphic lion with 100 levels, Malayalam dialogues, business empire building, drivable vehicles, and unlimited GHOP currency.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
