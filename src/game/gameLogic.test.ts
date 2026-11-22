@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  HOSPITAL_INTERIOR_BOUNDS,
   applyDialogueChoice,
   buildNpcDialogue,
   buyVehicle,
@@ -9,6 +10,7 @@ import {
   createInitialProgress,
   getRoadEgoMessage,
   getWorldColliders,
+  isInsideHospitalInterior,
   isSheruInCoconutDropRange,
   normalizeLoadedProgress,
   performBankTransaction,
@@ -294,4 +296,34 @@ test('coconut palm collision pushes actor off trunk, computes damped 3D spring s
   assert.equal(isSheruInCoconutDropRange(8.5, 9.5, 7.1, 9.5, 3.8), true);
   assert.equal(isSheruInCoconutDropRange(8.5, 9.5, 2.0, 9.5, 3.8), false);
 });
+
+test('Kerala General Hospital has hollow walk-in doorway colliders, solid perimeter walls, and accurate interior bounds', () => {
+  const colliders = getWorldColliders();
+  assert.ok(!colliders.some((c) => c.id === 'hospital'), 'Hospital must not be a single solid box');
+  assert.ok(colliders.some((c) => c.id === 'hospital_wall_n'));
+  assert.ok(colliders.some((c) => c.id === 'hospital_wall_sl'));
+  assert.ok(colliders.some((c) => c.id === 'hospital_wall_sr'));
+
+  // Walking straight through the wide 4.8m sliding doorway at (64, -40) must NOT collide!
+  const throughDoor = resolveCircleWorldCollision(
+    HOSPITAL_INTERIOR_BOUNDS.doorX,
+    HOSPITAL_INTERIOR_BOUNDS.doorZ,
+    0.85,
+    colliders,
+  );
+  assert.equal(throughDoor.collided, false);
+
+  // Standing in the bright central Hospital lobby at (64, -43) must NOT collide and registers as interior
+  const inLobby = resolveCircleWorldCollision(64, -43, 0.85, colliders);
+  assert.equal(inLobby.collided, false);
+  assert.equal(isInsideHospitalInterior(64, -43), true);
+  assert.equal(isInsideHospitalInterior(64, -36), false);
+
+  // Trying to walk through the solid North back wall (64, -52) or West wall (56, -46) MUST block!
+  const hitNorth = resolveCircleWorldCollision(64, -51.6, 0.85, colliders);
+  assert.equal(hitNorth.collided, true);
+  const hitWest = resolveCircleWorldCollision(56.4, -46, 0.85, colliders);
+  assert.equal(hitWest.collided, true);
+});
+
 

@@ -783,7 +783,7 @@ export default function App() {
             handleFastTravel(30, 56, 'Sheru Pool & Luxury Resort', 'pool_resort')
           }
           onFastTravelHospital={() =>
-            handleFastTravel(54, -36, 'Kerala General Hospital (108)', 'hospital')
+            handleFastTravel(64, -36.5, 'Kerala General Hospital (108)', 'hospital')
           }
           onClose={() => setActivePanel('none')}
         />

@@ -47,6 +47,50 @@ export const EmergencyModal: React.FC<EmergencyModalProps> = ({
     );
   }
 
+  if (incident.status === 'treated' && doctorResult) {
+    return (
+      <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 pointer-events-auto w-[94vw] max-w-xl rounded-2xl bg-[#161a1d]/95 border-2 border-[#4ade80] shadow-[0_18px_50px_rgba(0,0,0,0.75)] text-[#fff8e7] overflow-hidden">
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-[#0f5132] border-b border-emerald-400/35">
+          <div className="flex items-center gap-2">
+            <HeartPulse className="w-5 h-5 text-[#4ade80] shrink-0" />
+            <div>
+              <div className="text-[10px] font-extrabold uppercase tracking-widest text-[#86efac]">
+                KERALA GENERAL HOSPITAL · 108 VIP WARD
+              </div>
+              <h3 className="font-display font-extrabold text-sm sm:text-base leading-tight">
+                {incident.title}
+              </h3>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Close Hospital Recovery Card"
+            className="p-1.5 rounded-lg bg-black/25 hover:bg-black/45 text-white cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="px-4 py-3 space-y-2.5">
+          <div className="p-2.5 rounded-xl bg-[#1f292e] border border-[#4ade80]/35 space-y-1">
+            <p className="font-ml text-sm text-[#ffd166] font-semibold leading-relaxed">
+              {doctorResult.ml}
+            </p>
+            <p className="text-xs text-[#d1d5db] leading-relaxed">{doctorResult.en}</p>
+          </div>
+          <button
+            type="button"
+            data-testid="hospital-recovery-done"
+            onClick={onDismiss}
+            className="w-full py-2 rounded-xl bg-[#f5c542] hover:bg-[#ffd566] text-[#141a17] font-display font-extrabold text-xs sm:text-sm cursor-pointer"
+          >
+            EXPLORE HOSPITAL INTERIOR &amp; TOWN (+15 FAME!)
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
       <div className="w-full max-w-lg rounded-2xl bg-[#161a1d] border-2 border-[#ef4444] shadow-[0_18px_50px_rgba(0,0,0,0.8)] text-[#fff8e7] overflow-hidden">
@@ -74,27 +118,7 @@ export const EmergencyModal: React.FC<EmergencyModalProps> = ({
         </div>
 
         <div className="p-5 space-y-4">
-          {incident.status === 'treated' && doctorResult ? (
-            <>
-              <div className="flex items-center gap-2 text-[#4ade80] font-display font-bold text-base">
-                <HeartPulse className="w-5 h-5" />
-                <span>Kerala General Hospital — 100% VIP Recovery!</span>
-              </div>
-              <div className="p-3.5 rounded-xl bg-[#1f292e] border border-[#4ade80]/40 space-y-1.5">
-                <p className="font-ml text-sm text-[#ffd166] font-semibold leading-relaxed">
-                  {doctorResult.ml}
-                </p>
-                <p className="text-xs text-[#d1d5db] leading-relaxed">{doctorResult.en}</p>
-              </div>
-              <button
-                type="button"
-                onClick={onDismiss}
-                className="w-full py-2.5 rounded-xl bg-[#f5c542] hover:bg-[#ffd566] text-[#141a17] font-display font-extrabold text-sm cursor-pointer"
-              >
-                BACK TO KERALA TOWN (+15 FAME!)
-              </button>
-            </>
-          ) : incident.status === 'alert' ? (
+          {incident.status === 'alert' ? (
             <>
               <div className="p-3.5 rounded-xl bg-[#241b1b] border border-red-500/40 space-y-1.5">
                 <p className="font-ml text-base text-[#ffd166] font-bold leading-relaxed">

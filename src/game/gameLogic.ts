@@ -161,10 +161,109 @@ export function getTimeOfDayPhase(t: number): TimeOfDayPhase {
   return 'day';
 }
 
+// --- HOSPITAL WALK-IN INTERIOR BOUNDS & COLLIDERS (PURE, TESTABLE) ---
+export const HOSPITAL_INTERIOR_BOUNDS = {
+  centerX: 64,
+  centerZ: -46,
+  minX: 56.55,
+  maxX: 71.45,
+  minZ: -51.45,
+  maxZ: -40.25,
+  doorX: 64,
+  doorZ: -40,
+  doorHalfWidth: 2.4,
+  ceilingY: 5.4,
+} as const;
+
+export function isInsideHospitalInterior(x: number, z: number): boolean {
+  return (
+    x >= HOSPITAL_INTERIOR_BOUNDS.minX &&
+    x <= HOSPITAL_INTERIOR_BOUNDS.maxX &&
+    z >= HOSPITAL_INTERIOR_BOUNDS.minZ &&
+    z <= HOSPITAL_INTERIOR_BOUNDS.maxZ
+  );
+}
+
+export function getHospitalWallColliders(b: {
+  id: string;
+  x: number;
+  z: number;
+  width: number;
+  depth: number;
+  height: number;
+}): AABB[] {
+  const halfW = b.width / 2;
+  const halfD = b.depth / 2;
+  const minX = b.x - halfW;
+  const maxX = b.x + halfW;
+  const minZ = b.z - halfD;
+  const maxZ = b.z + halfD;
+  const wallT = 0.55;
+  const doorHalf = HOSPITAL_INTERIOR_BOUNDS.doorHalfWidth;
+
+  return [
+    // North back wall
+    { id: `${b.id}_wall_n`, minX, maxX, minZ, maxZ: minZ + wallT, height: b.height },
+    // West side wall
+    { id: `${b.id}_wall_w`, minX, maxX: minX + wallT, minZ, maxZ, height: b.height },
+    // East side wall
+    { id: `${b.id}_wall_e`, minX: maxX - wallT, maxX, minZ, maxZ, height: b.height },
+    // South front-left wall (leaves wide 4.8m emergency sliding doorway open!)
+    {
+      id: `${b.id}_wall_sl`,
+      minX,
+      maxX: b.x - doorHalf,
+      minZ: maxZ - wallT,
+      maxZ,
+      height: b.height,
+    },
+    // South front-right wall
+    {
+      id: `${b.id}_wall_sr`,
+      minX: b.x + doorHalf,
+      maxX,
+      minZ: maxZ - wallT,
+      maxZ,
+      height: b.height,
+    },
+    // Interior 108 Reception Desk counter (back-left)
+    {
+      id: `${b.id}_desk`,
+      minX: b.x - 6.2,
+      maxX: b.x - 2.4,
+      minZ: b.z - 4.1,
+      maxZ: b.z - 2.7,
+      height: 1.3,
+    },
+    // Interior VIP Recovery Bed #1 (back-right)
+    {
+      id: `${b.id}_bed1`,
+      minX: b.x + 3.1,
+      maxX: b.x + 6.9,
+      minZ: b.z - 3.5,
+      maxZ: b.z - 1.7,
+      height: 1.2,
+    },
+    // Interior VIP Recovery Bed #2 (front-right)
+    {
+      id: `${b.id}_bed2`,
+      minX: b.x + 3.1,
+      maxX: b.x + 6.9,
+      minZ: b.z + 0.9,
+      maxZ: b.z + 2.7,
+      height: 1.2,
+    },
+  ];
+}
+
 // --- COLLISION MATH (PURE, TESTABLE) ---
 export function getWorldColliders(builtPlotIds: string[] = []): AABB[] {
   const boxes: AABB[] = [];
   for (const b of BUILDINGS) {
+    if (b.id === 'hospital') {
+      boxes.push(...getHospitalWallColliders(b));
+      continue;
+    }
     const halfW = (b.rotationY % Math.PI === 0 ? b.width : b.depth) / 2;
     const halfD = (b.rotationY % Math.PI === 0 ? b.depth : b.width) / 2;
     boxes.push({

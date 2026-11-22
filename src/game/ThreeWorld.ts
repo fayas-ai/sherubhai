@@ -29,10 +29,12 @@ import {
 } from '../data/worldData';
 import { VEHICLE_CATALOG } from '../data/vehiclesData';
 import {
+  HOSPITAL_INTERIOR_BOUNDS,
   checkPalmTreeCollision,
   computePalmShakeState,
   getTimeOfDayPhase,
   getWorldColliders,
+  isInsideHospitalInterior,
   isSheruInCoconutDropRange,
   resolveCircleWorldCollision,
 } from './gameLogic';
@@ -40,6 +42,7 @@ import {
   BuildingMeshHandle,
   CoconutPalmRig,
   FallingCoconutRig,
+  HospitalInteriorRig,
   NpcModelRig,
   SheruModelRig,
   TrafficLightRig,
@@ -257,6 +260,8 @@ export class ThreeWorld {
   private roadEgoCooldown = 0;
   private poolSplashCooldown = 0;
   private inPool = false;
+  private inHospital = false;
+  private hospitalInteriorRig: HospitalInteriorRig | null = null;
 
   // Autopilot & Emergency 108 Ambulance Rescue state
   private autopilotDest: AutoDestination | null = null;
@@ -579,6 +584,9 @@ export class ThreeWorld {
         this.maxAnisotropy,
       );
       this.buildingHandles.set(b.id, handle);
+      if (handle.hospitalInterior) {
+        this.hospitalInteriorRig = handle.hospitalInterior;
+      }
       this.windowMats.push(...handle.windowMats);
       this.scene.add(handle.group);
     }
@@ -1048,6 +1056,29 @@ export class ThreeWorld {
       }
     }
 
+    // Special walk-in landing for Kerala General Hospital right in front of the automatic sliding doors!
+    if (targetId === 'hospital') {
+      this.playerX = HOSPITAL_INTERIOR_BOUNDS.doorX;
+      this.playerZ = HOSPITAL_INTERIOR_BOUNDS.doorZ + 3.4;
+      this.playerY = 0;
+      this.playerVy = 0;
+      this.playerYaw = Math.PI;
+      this.camYaw = Math.PI;
+      this.camPitch = 0.22;
+      this.camCurrentPos.set(this.playerX, 2.7, this.playerZ + 6.4);
+      this.camLookTarget.set(this.playerX, 1.8, this.playerZ - 4.0);
+      if (this.hospitalInteriorRig) {
+        this.hospitalInteriorRig.doorOpenAmount = 1;
+        this.hospitalInteriorRig.slidingDoorLeft.position.x = -3.25;
+        this.hospitalInteriorRig.slidingDoorRight.position.x = 3.25;
+      }
+      this.sheru.root.position.set(this.playerX, this.playerY, this.playerZ);
+      this.sheru.root.rotation.y = this.playerYaw;
+      this.hudThrottle = 1;
+      this.spawnParticleBurst(this.playerX, 1.4, this.playerZ, 16, 0xffd166);
+      return;
+    }
+
     // If destination is inside a building footprint, land right in front of its entrance inside triggerRange
     const targetBuilding = BUILDINGS.find(
       (b) =>
@@ -1254,7 +1285,15 @@ export class ThreeWorld {
     this.triggerInteract(); // Exit neatly beside parked vehicle
   }
 
-  public dispatchEmergencyAmbulance(targetX: number, targetZ: number) {
+  public dispatchEmergencyAmbulance(rawTargetX: number, rawTargetZ: number) {
+    // If Sheru calls 108 while already inside Hospital, dispatch ambulance cleanly to the front Emergency Porch!
+    const targetX = isInsideHospitalInterior(rawTargetX, rawTargetZ)
+      ? HOSPITAL_INTERIOR_BOUNDS.doorX
+      : rawTargetX;
+    const targetZ = isInsideHospitalInterior(rawTargetX, rawTargetZ)
+      ? HOSPITAL_INTERIOR_BOUNDS.doorZ + 5.2
+      : rawTargetZ;
+
     let amb = this.liveVehicles.find((v) => v.id === 'veh_ambulance_108');
     if (!amb) {
       const cat = VEHICLE_CATALOG.find((v) => v.id === 'veh_ambulance_108')!;
@@ -1297,10 +1336,10 @@ export class ThreeWorld {
       const safe = resolveCircleWorldCollision(chosen.x, chosen.z, 1.8, this.colliders);
       amb.x = safe.x;
       amb.z = safe.z;
-      amb.yaw = Math.atan2(targetX - amb.x, targetZ - amb.z);
-      amb.mesh.position.set(amb.x, 0, amb.z);
-      amb.mesh.rotation.y = amb.yaw;
     }
+    amb.yaw = Math.atan2(targetX - amb.x, targetZ - amb.z);
+    amb.mesh.position.set(amb.x, 0, amb.z);
+    amb.mesh.rotation.y = amb.yaw;
     amb.sirenOn = true;
     soundEngine.startSiren('ambulance');
     this.emergencyDispatch = {
@@ -1328,7 +1367,7 @@ export class ThreeWorld {
         id: 'dest_hospital',
         name: 'Kerala General Hospital',
         mlName: 'ആശുപത്രി (108)',
-        x: 54,
+        x: 64,
         z: -34,
       };
     } else {
@@ -1591,8 +1630,28 @@ export class ThreeWorld {
       );
     }
 
-    // Buildings (Bank, Shops, Secret Tunnel)
+    // Buildings (Bank, Shops, Secret Tunnel, and Walk-In Hospital 108 Reception Desk)
     for (const b of BUILDINGS) {
+      if (b.id === 'hospital') {
+        const deskX = b.x - 4.3;
+        const deskZ = b.z - 2.6;
+        const deskDist = Math.hypot(deskX - this.playerX, deskZ - this.playerZ);
+        if (deskDist <= 3.4) {
+          consider(
+            {
+              kind: 'building',
+              id: b.id,
+              label: '108 Reception — VIP Checkup',
+              sublabel: 'കേരള ജനറൽ ആശുപത്രി',
+              distance: deskDist,
+              x: deskX,
+              z: deskZ,
+            },
+            3.4,
+          );
+        }
+        continue;
+      }
       const frontDist = Math.hypot(b.x - this.playerX, b.z - this.playerZ);
       const triggerRange = Math.max(b.width, b.depth) * 0.65 + 3.2;
       if (frontDist <= triggerRange) {
@@ -1973,7 +2032,7 @@ export class ThreeWorld {
         if (
           this.emergencyDispatch.active &&
           this.emergencyDispatch.phase === 'to_hospital' &&
-          Math.hypot(veh.x - 56, veh.z + 38) < 12
+          Math.hypot(veh.x - 62, veh.z + 36) < 13
         ) {
           this.completeHospitalDropoff();
           return;
@@ -2193,16 +2252,72 @@ export class ThreeWorld {
     if (amb) {
       amb.speed = 0;
       amb.sirenOn = false;
+      // Park the 108 Ambulance neatly outside the Hospital Emergency Porch
+      amb.x = HOSPITAL_INTERIOR_BOUNDS.doorX;
+      amb.z = HOSPITAL_INTERIOR_BOUNDS.doorZ + 5.2;
+      amb.yaw = Math.PI / 2;
+      amb.mesh.position.set(amb.x, 0, amb.z);
+      amb.mesh.rotation.y = amb.yaw;
     }
     soundEngine.stopSiren();
     this.activeVehicleId = null;
     this.sheru.root.visible = true;
-    this.playerX = 60;
-    this.playerZ = -37;
+
+    // Slide Hospital glass emergency doors wide open & walk Sheru straight INSIDE the 3D Hospital interior!
+    if (this.hospitalInteriorRig) {
+      this.hospitalInteriorRig.doorOpenAmount = 1;
+      this.hospitalInteriorRig.slidingDoorLeft.position.x = -3.25;
+      this.hospitalInteriorRig.slidingDoorRight.position.x = 3.25;
+    }
+    this.playerX = HOSPITAL_INTERIOR_BOUNDS.doorX;
+    this.playerZ = HOSPITAL_INTERIOR_BOUNDS.doorZ - 3.0;
     this.playerY = 0;
+    this.playerVy = 0;
+    this.playerYaw = Math.PI; // Facing North into the bright Hospital Ward, Dr. Hari Menon & VIP Beds!
+    this.inHospital = true;
     this.sheru.root.position.set(this.playerX, 0, this.playerZ);
+    this.sheru.root.rotation.y = this.playerYaw;
+
+    // Frame the interior camera cleanly through the open entrance showcasing the full 3D Hospital Ward
+    this.camYaw = Math.PI;
+    this.camPitch = 0.16;
+    this.camCurrentPos.set(this.playerX, 2.35, HOSPITAL_INTERIOR_BOUNDS.doorZ + 0.7);
+    this.camLookTarget.set(this.playerX, 1.65, HOSPITAL_INTERIOR_BOUNDS.centerZ - 1.0);
+    this.camera.position.copy(this.camCurrentPos);
+    this.camera.lookAt(this.camLookTarget);
+
+    this.spawnParticleBurst(this.playerX, 1.6, this.playerZ, 18, 0x4ade80);
     this.hudThrottle = 1;
     this.callbacks.onHospitalArrived();
+  }
+
+  private updateHospitalInterior(dt: number) {
+    this.inHospital = !this.activeVehicleId && isInsideHospitalInterior(this.playerX, this.playerZ);
+    const rig = this.hospitalInteriorRig;
+    if (!rig) return;
+
+    const doorDistPlayer = Math.hypot(
+      this.playerX - HOSPITAL_INTERIOR_BOUNDS.doorX,
+      this.playerZ - HOSPITAL_INTERIOR_BOUNDS.doorZ,
+    );
+    const amb = this.liveVehicles.find((v) => v.id === this.emergencyDispatch.ambulanceId);
+    const ambNear =
+      amb !== undefined &&
+      Math.hypot(amb.x - HOSPITAL_INTERIOR_BOUNDS.doorX, amb.z - (HOSPITAL_INTERIOR_BOUNDS.doorZ + 3)) < 8.5;
+
+    const shouldOpen = this.inHospital || doorDistPlayer < 7.5 || ambNear;
+    const targetOpen = shouldOpen ? 1 : 0;
+    rig.doorOpenAmount += (targetOpen - rig.doorOpenAmount) * Math.min(1, dt * 7.5);
+    rig.slidingDoorLeft.position.x = -1.2 - rig.doorOpenAmount * 2.1;
+    rig.slidingDoorRight.position.x = 1.2 + rig.doorOpenAmount * 2.1;
+
+    // Rhythmic pulsing heartbeat on the 3D ECG Vital Signs Monitor!
+    const pulse = Math.pow(Math.max(0, Math.sin(this.elapsed * 4.4)), 6);
+    rig.ecgScreenMat.emissiveIntensity = 0.65 + pulse * 0.95;
+
+    // Keep hospital interior bright both day and night
+    const phase = getTimeOfDayPhase(this.timeOfDay);
+    rig.interiorLight.intensity = phase === 'night' ? 2.1 : 1.35;
   }
 
   private updateTrafficAndEmergency(dt: number) {
@@ -2370,8 +2485,8 @@ export class ThreeWorld {
         } else {
           const targetYaw = Math.atan2(dx, dz);
           const diff = Math.atan2(Math.sin(targetYaw - amb.yaw), Math.cos(targetYaw - amb.yaw));
-          amb.yaw += THREE.MathUtils.clamp(diff, -4.5 * dt, 4.5 * dt);
-          amb.speed = Math.min(26, Math.max(12, dist * 1.8));
+          amb.yaw += THREE.MathUtils.clamp(diff, -5.2 * dt, 5.2 * dt);
+          amb.speed = Math.abs(diff) > 0.6 ? 5 : Math.min(28, Math.max(14, dist * 2.0));
           const nx = amb.x + Math.sin(amb.yaw) * amb.speed * dt;
           const nz = amb.z + Math.cos(amb.yaw) * amb.speed * dt;
           const safe = resolveCircleWorldCollision(nx, nz, 1.5, this.colliders);
@@ -2646,20 +2761,41 @@ export class ThreeWorld {
       return;
     }
 
-    const followDist = this.activeVehicleId ? 10.5 : 7.6;
-    const followHeight = this.activeVehicleId ? 4.4 : 3.2;
+    const followDist = this.activeVehicleId ? 10.5 : this.inHospital ? 4.4 : 7.6;
+    const followHeight = this.activeVehicleId ? 4.4 : this.inHospital ? 2.05 : 3.2;
 
     const horizDist = Math.cos(this.camPitch) * followDist;
     const vertOffset = Math.sin(this.camPitch) * followDist + followHeight * 0.45;
 
     let desiredX = this.playerX - Math.sin(this.camYaw) * horizDist;
     let desiredZ = this.playerZ - Math.cos(this.camYaw) * horizDist;
-    const desiredY = Math.max(1.4, this.playerY + vertOffset);
+    let desiredY = Math.max(1.4, this.playerY + vertOffset);
 
-    // Pull camera in smoothly if behind a building collider
-    const camSafe = resolveCircleWorldCollision(desiredX, desiredZ, 0.7, this.colliders);
-    desiredX = camSafe.x;
-    desiredZ = camSafe.z;
+    if (this.inHospital) {
+      // Keep interior camera cleanly below the 5.4m ceiling and inside the bright Hospital Ward walls
+      desiredY = THREE.MathUtils.clamp(desiredY, 1.45, 4.4);
+      desiredX = THREE.MathUtils.clamp(
+        desiredX,
+        HOSPITAL_INTERIOR_BOUNDS.minX + 0.75,
+        HOSPITAL_INTERIOR_BOUNDS.maxX - 0.75,
+      );
+      const inDoorCorridor =
+        Math.abs(desiredX - HOSPITAL_INTERIOR_BOUNDS.doorX) <
+        HOSPITAL_INTERIOR_BOUNDS.doorHalfWidth - 0.35;
+      const maxCamZ = inDoorCorridor
+        ? HOSPITAL_INTERIOR_BOUNDS.doorZ + 1.4
+        : HOSPITAL_INTERIOR_BOUNDS.maxZ - 0.65;
+      desiredZ = THREE.MathUtils.clamp(
+        desiredZ,
+        HOSPITAL_INTERIOR_BOUNDS.minZ + 0.75,
+        maxCamZ,
+      );
+    } else {
+      // Pull camera in smoothly if behind a building collider
+      const camSafe = resolveCircleWorldCollision(desiredX, desiredZ, 0.7, this.colliders);
+      desiredX = camSafe.x;
+      desiredZ = camSafe.z;
+    }
 
     const k = 1 - Math.exp(-10 * dt);
     _v1.set(desiredX, desiredY, desiredZ);
@@ -2678,7 +2814,7 @@ export class ThreeWorld {
       this.camera.position.copy(this.camCurrentPos);
     }
 
-    _v2.set(this.playerX, this.playerY + 1.85, this.playerZ);
+    _v2.set(this.playerX, this.playerY + (this.inHospital ? 1.65 : 1.85), this.playerZ);
     this.camLookTarget.lerp(_v2, 1 - Math.exp(-14 * dt));
     this.camera.lookAt(this.camLookTarget);
   }
@@ -2699,7 +2835,9 @@ export class ThreeWorld {
       playerYaw: this.playerYaw,
       speed: speedVal,
       speedKmh: Math.min(180, Math.round(speedVal * 4)),
-      district: getDistrictAt(this.playerX, this.playerZ),
+      district: this.inHospital
+        ? 'Hospital Interior'
+        : getDistrictAt(this.playerX, this.playerZ),
       inVehicleId: this.activeVehicleId,
       inVehicleName: activeVeh?.name ?? null,
       inVehicleHasSiren: activeVeh?.hasSiren ?? false,
@@ -2759,6 +2897,7 @@ export class ThreeWorld {
     this.updateLighting(dt);
     this.updatePlayerAndVehicles(dt);
     this.updateTrafficAndEmergency(dt);
+    this.updateHospitalInterior(dt);
     this.updateNpcsAndAmbient(dt);
     this.updateCamera(dt);
     this.emitHudIfDue(dt);

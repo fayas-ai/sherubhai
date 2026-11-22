@@ -610,11 +610,762 @@ export function createNpcModel(def: NpcDef): NpcModelRig {
   return { root, bodyGroup, leftArm, rightArm, leftLeg, rightLeg, bossHalo };
 }
 
+export interface HospitalInteriorRig {
+  slidingDoorLeft: THREE.Group;
+  slidingDoorRight: THREE.Group;
+  ecgScreenMat: THREE.MeshStandardMaterial;
+  interiorLight: THREE.PointLight;
+  doorOpenAmount: number;
+}
+
 export interface BuildingMeshHandle {
   group: THREE.Group;
   signMesh: THREE.Mesh;
   windowMats: THREE.MeshStandardMaterial[];
   def: BuildingDef;
+  hospitalInterior?: HospitalInteriorRig;
+}
+
+function createHospitalFloorTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 384;
+  const ctx = c.getContext('2d')!;
+
+  // Soft clinical mint-white ceramic tiles
+  ctx.fillStyle = '#eef8f6';
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  const tile = 32;
+  for (let y = 0; y < c.height; y += tile) {
+    for (let x = 0; x < c.width; x += tile) {
+      const alt = ((x / tile) + (y / tile)) % 2 === 0;
+      ctx.fillStyle = alt ? '#f5fbfa' : '#e4f2ef';
+      ctx.fillRect(x, y, tile, tile);
+      ctx.strokeStyle = '#cde2de';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, tile - 1, tile - 1);
+    }
+  }
+
+  // Central green-and-red 108 Emergency walkway runner leading from doorway (+Z = bottom) inward
+  const aisleW = 112;
+  const aisleX = (c.width - aisleW) / 2;
+  ctx.fillStyle = '#d1fae5';
+  ctx.fillRect(aisleX, 54, aisleW, c.height - 54);
+  ctx.fillStyle = '#dc2626';
+  ctx.fillRect(aisleX, 54, 7, c.height - 54);
+  ctx.fillRect(aisleX + aisleW - 7, 54, 7, c.height - 54);
+
+  // Clean medical cross emblem painted on center lobby floor
+  const cx = c.width / 2;
+  const cy = c.height * 0.58;
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(cx, cy, 34, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#dc2626';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  ctx.fillStyle = '#dc2626';
+  ctx.fillRect(cx - 7, cy - 20, 14, 40);
+  ctx.fillRect(cx - 20, cy - 7, 40, 14);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(4, maxAnisotropy);
+  return tex;
+}
+
+function createEcgTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 160;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#071b14';
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  // Subtle grid
+  ctx.strokeStyle = '#0f3d2e';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < c.width; x += 24) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, c.height);
+    ctx.stroke();
+  }
+  for (let y = 0; y < c.height; y += 24) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(c.width, y);
+    ctx.stroke();
+  }
+
+  // Heartbeat ECG waveform
+  ctx.strokeStyle = '#4ade80';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(0, 96);
+  ctx.lineTo(48, 96);
+  ctx.lineTo(62, 82);
+  ctx.lineTo(74, 108);
+  ctx.lineTo(90, 32);
+  ctx.lineTo(106, 128);
+  ctx.lineTo(120, 96);
+  ctx.lineTo(175, 96);
+  ctx.lineTo(190, 78);
+  ctx.lineTo(206, 36);
+  ctx.lineTo(222, 120);
+  ctx.lineTo(234, 96);
+  ctx.lineTo(256, 96);
+  ctx.stroke();
+
+  ctx.fillStyle = '#86efac';
+  ctx.font = 'bold 20px monospace';
+  ctx.fillText('HR 78  SPO2 99%', 14, 28);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function createHospitalWallBannerTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 128;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#dc2626';
+  ctx.fillRect(0, 0, c.width, 16);
+  ctx.fillRect(0, c.height - 12, c.width, 12);
+
+  // Red Cross badge on left
+  ctx.fillStyle = '#dc2626';
+  ctx.fillRect(30, 34, 16, 54);
+  ctx.fillRect(11, 53, 54, 16);
+
+  ctx.fillStyle = '#0f172a';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText('KERALA GENERAL HOSPITAL', 84, 58);
+  ctx.fillStyle = '#0369a1';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('108 EMERGENCY & SHERU VIP WARD', 84, 94);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = Math.min(4, maxAnisotropy);
+  return tex;
+}
+
+function buildWalkInHospitalBuilding(
+  def: BuildingDef,
+  owned: OwnedBusinessRecord | undefined,
+  plasterBump: THREE.Texture,
+  maxAnisotropy: number,
+): BuildingMeshHandle {
+  const group = new THREE.Group();
+  group.position.set(def.x, 0, def.z);
+  group.rotation.y = def.rotationY;
+
+  const w = def.width; // 16
+  const d = def.depth; // 12
+  const halfW = w / 2; // 8
+  const halfD = d / 2; // 6
+  const groundH = 5.4;
+  const wallT = 0.42;
+  const doorHalfW = 2.4;
+  const doorH = 3.55;
+
+  const wallMat = new THREE.MeshStandardMaterial({
+    color: 0xf4f8fa,
+    roughness: 0.78,
+    metalness: 0.03,
+    bumpMap: plasterBump,
+    bumpScale: 0.04,
+  });
+  const interiorWallMat = new THREE.MeshStandardMaterial({
+    color: 0xe3f3ee,
+    roughness: 0.82,
+    metalness: 0.02,
+  });
+  const wainscotMat = new THREE.MeshStandardMaterial({ color: 0xbfe7de, roughness: 0.75 });
+  const blueStripeMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.42 });
+  const redMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.38 });
+  const chromeMat = new THREE.MeshStandardMaterial({
+    color: 0xdbe3ec,
+    roughness: 0.25,
+    metalness: 0.78,
+  });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x99e9f2,
+    transparent: true,
+    opacity: 0.34,
+    roughness: 0.12,
+    metalness: 0.25,
+  });
+  const ceilingMat = new THREE.MeshStandardMaterial({ color: 0xf4f8fb, roughness: 0.85 });
+
+  // 1. Flush clinical tiled interior floor (y = 0.02 so characters & contact shadows never sink!)
+  const floorTex = createHospitalFloorTexture(maxAnisotropy);
+  const floorMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(w - 0.3, d - 0.3),
+    new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.55 }),
+  );
+  floorMesh.rotation.x = -Math.PI / 2;
+  floorMesh.position.y = 0.02;
+  floorMesh.receiveShadow = true;
+  group.add(floorMesh);
+
+  // Outside emergency porch concrete apron
+  const apron = new THREE.Mesh(
+    new THREE.PlaneGeometry(11.2, 4.4),
+    new THREE.MeshStandardMaterial({ color: 0xd6dce2, roughness: 0.88 }),
+  );
+  apron.rotation.x = -Math.PI / 2;
+  apron.position.set(0, 0.015, halfD + 2.1);
+  apron.receiveShadow = true;
+  group.add(apron);
+
+  // 2. Hollow Ground-Floor Perimeter Walls
+  // Back North Wall
+  const backWall = new THREE.Mesh(new THREE.BoxGeometry(w, groundH, wallT), wallMat);
+  backWall.position.set(0, groundH / 2, -halfD + wallT / 2);
+  backWall.castShadow = true;
+  backWall.receiveShadow = true;
+  group.add(backWall);
+
+  // Interior soft mint wall liner + wainscot + blue trim along Back Wall
+  const backInner = new THREE.Mesh(
+    new THREE.BoxGeometry(w - 0.82, groundH - 0.1, 0.04),
+    interiorWallMat,
+  );
+  backInner.position.set(0, groundH / 2, -halfD + wallT + 0.01);
+  group.add(backInner);
+  const backWainscot = new THREE.Mesh(new THREE.BoxGeometry(w - 0.8, 1.32, 0.06), wainscotMat);
+  backWainscot.position.set(0, 0.66, -halfD + wallT + 0.04);
+  group.add(backWainscot);
+  const backStripe = new THREE.Mesh(new THREE.BoxGeometry(w - 0.8, 0.14, 0.07), blueStripeMat);
+  backStripe.position.set(0, 1.38, -halfD + wallT + 0.04);
+  group.add(backStripe);
+
+  // West & East Side Walls with large clear viewing windows
+  for (const side of [-1, 1]) {
+    const sx = side * (halfW - wallT / 2);
+    // Lower knee wall under window
+    const lowerSide = new THREE.Mesh(new THREE.BoxGeometry(wallT, 1.35, d), wallMat);
+    lowerSide.position.set(sx, 0.675, 0);
+    lowerSide.castShadow = true;
+    lowerSide.receiveShadow = true;
+    group.add(lowerSide);
+    // Upper lintel wall over window
+    const upperSide = new THREE.Mesh(new THREE.BoxGeometry(wallT, 1.75, d), wallMat);
+    upperSide.position.set(sx, 3.65 + 0.875, 0);
+    upperSide.castShadow = true;
+    group.add(upperSide);
+    // Front & Back solid corner piers
+    for (const sz of [-4.3, 4.3]) {
+      const pier = new THREE.Mesh(new THREE.BoxGeometry(wallT, 2.35, 3.4), wallMat);
+      pier.position.set(sx, 1.35 + 1.175, sz);
+      pier.castShadow = true;
+      group.add(pier);
+    }
+    // See-through side glass window
+    const sideGlass = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.3, 5.2), glassMat);
+    sideGlass.position.set(sx, 2.5, 0);
+    group.add(sideGlass);
+    // Interior wainscot accent strip
+    const sideWain = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.32, d - 0.8), wainscotMat);
+    sideWain.position.set(side * (halfW - wallT - 0.02), 0.66, 0);
+    group.add(sideWain);
+    const sideStripe = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.12, d - 0.8), blueStripeMat);
+    sideStripe.position.set(side * (halfW - wallT - 0.02), 1.38, 0);
+    group.add(sideStripe);
+  }
+
+  // Front South Wall (Split left & right around the 4.8m wide automatic glass sliding doorway!)
+  const wingW = halfW - doorHalfW; // 5.6m each side
+  for (const side of [-1, 1]) {
+    const cx = side * (doorHalfW + wingW / 2); // ±5.2
+    const fz = halfD - wallT / 2;
+    // Lower knee wall
+    const fLower = new THREE.Mesh(new THREE.BoxGeometry(wingW, 1.35, wallT), wallMat);
+    fLower.position.set(cx, 0.675, fz);
+    fLower.castShadow = true;
+    group.add(fLower);
+    // Upper header above storefront window
+    const fUpper = new THREE.Mesh(new THREE.BoxGeometry(wingW, 1.9, wallT), wallMat);
+    fUpper.position.set(cx, 3.5 + 0.95, fz);
+    fUpper.castShadow = true;
+    group.add(fUpper);
+    // Outer & inner mullions
+    const outerCol = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.15, wallT), wallMat);
+    outerCol.position.set(side * (halfW - 0.55), 2.425, fz);
+    group.add(outerCol);
+    const innerCol = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.15, wallT), wallMat);
+    innerCol.position.set(side * (doorHalfW + 0.45), 2.425, fz);
+    group.add(innerCol);
+    // See-through front clinic window pane
+    const frontGlass = new THREE.Mesh(new THREE.BoxGeometry(3.6, 2.12, 0.08), glassMat);
+    frontGlass.position.set(cx, 2.425, fz);
+    group.add(frontGlass);
+  }
+  // Transom header above the automatic sliding entrance
+  const transom = new THREE.Mesh(
+    new THREE.BoxGeometry(doorHalfW * 2, groundH - doorH, wallT),
+    wallMat,
+  );
+  transom.position.set(0, doorH + (groundH - doorH) / 2, halfD - wallT / 2);
+  group.add(transom);
+
+  // Brushed aluminum doorway surround & top sliding track
+  for (const side of [-1, 1]) {
+    const jamb = new THREE.Mesh(new THREE.BoxGeometry(0.16, doorH, 0.48), chromeMat);
+    jamb.position.set(side * (doorHalfW + 0.02), doorH / 2, halfD - wallT / 2);
+    group.add(jamb);
+  }
+  const track = new THREE.Mesh(new THREE.BoxGeometry(doorHalfW * 2 + 0.4, 0.2, 0.52), chromeMat);
+  track.position.set(0, doorH + 0.05, halfD - wallT / 2);
+  group.add(track);
+
+  // Automatic Sliding Glass Emergency Doors (animated smoothly in ThreeWorld!)
+  const buildSlidingDoorLeaf = (side: -1 | 1): THREE.Group => {
+    const leaf = new THREE.Group();
+    const leafW = doorHalfW - 0.04; // 2.36
+    const leafH = doorH - 0.08; // 3.47
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(leafW, leafH, 0.08), glassMat);
+    pane.position.y = leafH / 2;
+    leaf.add(pane);
+
+    // Top & bottom aluminum rails
+    const topRail = new THREE.Mesh(new THREE.BoxGeometry(leafW, 0.14, 0.11), chromeMat);
+    topRail.position.y = leafH - 0.07;
+    const botRail = new THREE.Mesh(new THREE.BoxGeometry(leafW, 0.18, 0.11), chromeMat);
+    botRail.position.y = 0.09;
+    leaf.add(topRail, botRail);
+
+    // Crisp red emergency visibility band
+    const band = new THREE.Mesh(new THREE.BoxGeometry(leafW - 0.08, 0.22, 0.1), redMat);
+    band.position.y = 1.45;
+    leaf.add(band);
+
+    // Vertical chrome handle near center seam
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.72, 8), chromeMat);
+    handle.position.set(-side * (leafW / 2 - 0.2), 1.45, 0.08);
+    leaf.add(handle);
+
+    leaf.position.set(side * (doorHalfW / 2), 0.02, halfD - wallT / 2 + 0.02);
+    return leaf;
+  };
+  const slidingDoorLeft = buildSlidingDoorLeaf(-1);
+  const slidingDoorRight = buildSlidingDoorLeaf(1);
+  group.add(slidingDoorLeft, slidingDoorRight);
+
+  // 3. Upper 2nd-Story Exterior Shell, Roof, Signboard, Red Cross & Emergency Drive-Up Porch
+  const upperH = Math.max(4.4, def.height - groundH + 0.45);
+  const upperBody = new THREE.Mesh(new THREE.BoxGeometry(w, upperH, d), wallMat);
+  upperBody.position.y = groundH + upperH / 2;
+  upperBody.castShadow = true;
+  upperBody.receiveShadow = true;
+  group.add(upperBody);
+
+  // Interior acoustic ceiling + 3 bright glowing LED light panels + interior PointLight
+  const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(w - 0.6, d - 0.6), ceilingMat);
+  ceiling.rotation.x = Math.PI / 2;
+  ceiling.position.y = groundH - 0.02;
+  group.add(ceiling);
+
+  const ledPanelMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: 0xe0f7ff,
+    emissiveIntensity: 0.95,
+    roughness: 0.2,
+  });
+  for (const lx of [-4.2, 0, 4.2]) {
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.08, 1.1), ledPanelMat);
+    panel.position.set(lx, groundH - 0.06, -0.4);
+    group.add(panel);
+  }
+
+  const interiorLight = new THREE.PointLight(0xf4fffd, 1.4, 24, 1.25);
+  interiorLight.position.set(0, 4.35, -0.3);
+  group.add(interiorLight);
+
+  // Roof cornice & clean clinical hospital roof parapet + rooftop 108 H-pad
+  const topY = groundH + upperH;
+  const cornice = new THREE.Mesh(new THREE.BoxGeometry(w + 0.45, 0.34, d + 0.45), redMat);
+  cornice.position.y = topY + 0.14;
+  group.add(cornice);
+
+  const roofCap = new THREE.Mesh(
+    new THREE.BoxGeometry(w - 0.4, 0.35, d - 0.4),
+    new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.8 }),
+  );
+  roofCap.position.y = topY + 0.35;
+  group.add(roofCap);
+
+  // Glowing 2nd-story windows (nighttime glow)
+  const windowMats: THREE.MeshStandardMaterial[] = [];
+  const winMat = new THREE.MeshStandardMaterial({
+    color: 0x6ec1e4,
+    emissive: 0xffd166,
+    emissiveIntensity: 0.18,
+    roughness: 0.14,
+    metalness: 0.35,
+  });
+  windowMats.push(winMat);
+  for (const side of [-1, 1]) {
+    const uWin = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.5, 0.16), winMat);
+    uWin.position.set(side * 5.2, groundH + 2.35, halfD + 0.04);
+    group.add(uWin);
+  }
+
+  // Glowing 3D Red Medical Cross on upper facade
+  const crossMat = new THREE.MeshStandardMaterial({
+    color: 0xdc2626,
+    emissive: 0xef4444,
+    emissiveIntensity: 0.65,
+    roughness: 0.25,
+  });
+  const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.68, 2.2, 0.26), crossMat);
+  crossV.position.set(0, topY - 1.45, halfD + 0.22);
+  const crossH = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.68, 0.26), crossMat);
+  crossH.position.set(0, topY - 1.45, halfD + 0.22);
+  group.add(crossV, crossH);
+
+  // Ambulance Drive-Up Emergency Porch Canopy (wide 9.8m clearance so 108 Ambulance pulls right up!)
+  for (const sx of [-4.6, 4.6]) {
+    const col = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.24, 0.26, 4.0, 8),
+      new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.4 }),
+    );
+    col.position.set(sx, 2.0, halfD + 3.0);
+    group.add(col);
+  }
+  const porchRoof = new THREE.Mesh(new THREE.BoxGeometry(10.0, 0.36, 3.6), redMat);
+  porchRoof.position.set(0, 4.15, halfD + 1.8);
+  group.add(porchRoof);
+
+  // Prominent Signboard above canopy
+  const signW = Math.min(w * 0.85, 11.2);
+  const signH = 1.75;
+  const signTex = createSignboardTexture(
+    owned ? owned.customName : def.name,
+    def.mlSign,
+    Boolean(owned),
+    def.accentColor,
+    maxAnisotropy,
+  );
+  const signMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(signW, signH, 0.22),
+    new THREE.MeshStandardMaterial({
+      color: 0xf0f0f0,
+      map: signTex,
+      roughness: 0.78,
+      metalness: 0.04,
+    }),
+  );
+  signMesh.position.set(0, 5.95, halfD + 0.26);
+  group.add(signMesh);
+
+  // =========================================================================
+  // 4. DETAILED LOW-POLY 3D HOSPITAL INTERIOR FURNISHINGS
+  // =========================================================================
+
+  // 4A. Back-Wall Hospital Banner Plaque + Clinical Wall Clock
+  const bannerTex = createHospitalWallBannerTexture(maxAnisotropy);
+  const wallBanner = new THREE.Mesh(
+    new THREE.BoxGeometry(6.2, 1.35, 0.1),
+    new THREE.MeshStandardMaterial({ map: bannerTex, roughness: 0.55 }),
+  );
+  wallBanner.position.set(0, 3.35, -halfD + wallT + 0.09);
+  group.add(wallBanner);
+
+  // Cute round Hospital Wall Clock above the banner
+  const clockRim = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.42, 0.42, 0.08, 16),
+    new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.4 }),
+  );
+  clockRim.rotation.x = Math.PI / 2;
+  clockRim.position.set(-4.3, 3.65, -halfD + wallT + 0.08);
+  const clockFace = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.35, 0.35, 0.09, 16),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 }),
+  );
+  clockFace.rotation.x = Math.PI / 2;
+  clockFace.position.set(-4.3, 3.65, -halfD + wallT + 0.09);
+  const clockHandH = new THREE.Mesh(
+    new THREE.BoxGeometry(0.05, 0.22, 0.04),
+    new THREE.MeshStandardMaterial({ color: 0x0f172a }),
+  );
+  clockHandH.position.set(-4.3, 3.74, -halfD + wallT + 0.14);
+  const clockHandM = new THREE.Mesh(
+    new THREE.BoxGeometry(0.24, 0.04, 0.04),
+    redMat,
+  );
+  clockHandM.position.set(-4.2, 3.65, -halfD + wallT + 0.15);
+  group.add(clockRim, clockFace, clockHandH, clockHandM);
+
+  // Framed Eye Chart / Kerala Health Board on West Wall
+  const chartFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(0.08, 1.35, 0.95),
+    new THREE.MeshStandardMaterial({ color: 0x0f766e, roughness: 0.5 }),
+  );
+  chartFrame.position.set(-halfW + wallT + 0.06, 2.55, -3.7);
+  const chartPaper = new THREE.Mesh(
+    new THREE.BoxGeometry(0.09, 1.15, 0.76),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }),
+  );
+  chartPaper.position.set(-halfW + wallT + 0.07, 2.55, -3.7);
+  const chartHeader = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.18, 0.56), redMat);
+  chartHeader.position.set(-halfW + wallT + 0.08, 2.9, -3.7);
+  group.add(chartFrame, chartPaper, chartHeader);
+
+  // 4B. 108 Reception & Triage Desk (Back-Left: x = -4.3, z = -3.4)
+  const deskGroup = new THREE.Group();
+  deskGroup.position.set(-4.3, 0, -3.4);
+  const deskBody = new THREE.Mesh(
+    new THREE.BoxGeometry(3.6, 1.08, 1.12),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.45 }),
+  );
+  deskBody.position.y = 0.54;
+  deskBody.castShadow = true;
+  deskGroup.add(deskBody);
+
+  const deskTop = new THREE.Mesh(
+    new THREE.BoxGeometry(3.85, 0.1, 1.32),
+    new THREE.MeshStandardMaterial({ color: 0x0ea5e9, roughness: 0.35 }),
+  );
+  deskTop.position.y = 1.12;
+  deskGroup.add(deskTop);
+
+  const deskTrim = new THREE.Mesh(new THREE.BoxGeometry(3.64, 0.16, 1.16), redMat);
+  deskTrim.position.y = 0.14;
+  deskGroup.add(deskTrim);
+
+  // Mini 3D Red Cross on front of reception desk
+  const rCrossV = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.46, 0.06), redMat);
+  rCrossV.position.set(0, 0.64, 0.58);
+  const rCrossH = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.14, 0.06), redMat);
+  rCrossH.position.set(0, 0.64, 0.58);
+  deskGroup.add(rCrossV, rCrossH);
+
+  // Reception Computer Monitor + Red 108 Emergency Telephone
+  const monStand = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.24, 0.12), chromeMat);
+  monStand.position.set(-0.7, 1.28, -0.05);
+  const monBody = new THREE.Mesh(
+    new THREE.BoxGeometry(0.68, 0.44, 0.07),
+    new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.4 }),
+  );
+  monBody.position.set(-0.7, 1.56, -0.05);
+  const monScreen = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.36, 0.02),
+    new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0284c7,
+      emissiveIntensity: 0.55,
+    }),
+  );
+  monScreen.position.set(-0.7, 1.56, -0.005);
+  const redPhone = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.12, 0.24), redMat);
+  redPhone.position.set(0.85, 1.23, 0.1);
+  deskGroup.add(monStand, monBody, monScreen, redPhone);
+  group.add(deskGroup);
+
+  // 4C. Waiting Area Lounge (Front-Left: blue clinic benches + side table + potted indoor palm)
+  const buildWaitingBench = (bx: number, bz: number, rotY: number) => {
+    const bench = new THREE.Group();
+    bench.position.set(bx, 0, bz);
+    bench.rotation.y = rotY;
+    const seatMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.5 });
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.08, 0.12), chromeMat);
+    bar.position.y = 0.42;
+    bench.add(bar);
+    for (const lx of [-1.05, 1.05]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.42, 0.56), chromeMat);
+      leg.position.set(lx, 0.21, 0);
+      bench.add(leg);
+    }
+    for (const sx of [-0.82, 0, 0.82]) {
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.1, 0.56), seatMat);
+      seat.position.set(sx, 0.49, 0.04);
+      const back = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.56, 0.1), seatMat);
+      back.position.set(sx, 0.78, -0.22);
+      bench.add(seat, back);
+    }
+    group.add(bench);
+  };
+  buildWaitingBench(-6.6, 1.7, Math.PI / 2);
+  buildWaitingBench(-4.6, 4.45, Math.PI);
+
+  // Potted Tropical Kerala Indoor Plant in Waiting Corner
+  const pot = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.32, 0.22, 0.48, 8),
+    new THREE.MeshStandardMaterial({ color: 0xc26d3a, roughness: 0.85 }),
+  );
+  pot.position.set(-6.7, 0.24, 4.4);
+  group.add(pot);
+  const leafMat = new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.65 });
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.95, 5), leafMat);
+    leaf.position.set(-6.7 + Math.cos(a) * 0.2, 0.85, 4.4 + Math.sin(a) * 0.2);
+    leaf.rotation.set(Math.sin(a) * 0.42, 0, -Math.cos(a) * 0.42);
+    group.add(leaf);
+  }
+
+  // 4D. VIP Sheru Recovery Ward — Two Hospital Beds + Privacy Curtain (Right Wing)
+  const mattressMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 });
+  const blanketMat = new THREE.MeshStandardMaterial({ color: 0x2dd4bf, roughness: 0.65 });
+  const pillowMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.8 });
+  const headBoardMat = new THREE.MeshStandardMaterial({ color: 0x0f766e, roughness: 0.48 });
+
+  const buildHospitalBed = (bx: number, bz: number) => {
+    const bed = new THREE.Group();
+    bed.position.set(bx, 0, bz);
+    // Chrome bed frame & 4 legs
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.14, 1.56), chromeMat);
+    frame.position.y = 0.52;
+    bed.add(frame);
+    for (const lx of [-1.45, 1.45]) {
+      for (const lz of [-0.68, 0.68]) {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.52, 6), chromeMat);
+        leg.position.set(lx, 0.26, lz);
+        bed.add(leg);
+      }
+    }
+    // White mattress
+    const mattress = new THREE.Mesh(new THREE.BoxGeometry(3.05, 0.26, 1.48), mattressMat);
+    mattress.position.y = 0.72;
+    mattress.castShadow = true;
+    bed.add(mattress);
+    // Mint-teal folded hospital blanket covering lower two-thirds
+    const blanket = new THREE.Mesh(new THREE.BoxGeometry(1.92, 0.3, 1.54), blanketMat);
+    blanket.position.set(-0.52, 0.74, 0);
+    bed.add(blanket);
+    // Fluffy white pillow against East wall side (+X)
+    const pillow = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.18, 0.92), pillowMat);
+    pillow.position.set(1.08, 0.92, 0);
+    bed.add(pillow);
+    // Headboard & footboard
+    const headboard = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.05, 1.58), headBoardMat);
+    headboard.position.set(1.56, 0.85, 0);
+    const footboard = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.78, 1.58), headBoardMat);
+    footboard.position.set(-1.56, 0.72, 0);
+    bed.add(headboard, footboard);
+    group.add(bed);
+  };
+  buildHospitalBed(5.0, -2.6);
+  buildHospitalBed(5.0, 1.8);
+
+  // Teal Privacy Curtain Divider between VIP Bed #1 and Bed #2
+  const curtainRail = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 3.6, 6), chromeMat);
+  curtainRail.rotation.z = Math.PI / 2;
+  curtainRail.position.set(5.5, 3.1, -0.4);
+  group.add(curtainRail);
+  const curtainMat = new THREE.MeshStandardMaterial({
+    color: 0x5eead4,
+    roughness: 0.82,
+    transparent: true,
+    opacity: 0.88,
+  });
+  for (let i = 0; i < 4; i++) {
+    const pleat = new THREE.Mesh(new THREE.BoxGeometry(0.58, 2.35, 0.08), curtainMat);
+    pleat.position.set(4.6 + i * 0.62, 1.9, -0.4 + (i % 2 === 0 ? 0.04 : -0.04));
+    group.add(pleat);
+  }
+
+  // 4E. Animated Pulsing ECG Vital Signs Monitor on Medical Cart (Beside VIP Bed #1)
+  const ecgGroup = new THREE.Group();
+  ecgGroup.position.set(3.85, 0, -4.35);
+  ecgGroup.rotation.y = -0.35;
+  const cartBase = new THREE.Mesh(
+    new THREE.BoxGeometry(0.75, 0.88, 0.56),
+    new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.45 }),
+  );
+  cartBase.position.y = 0.48;
+  const ecgBezel = new THREE.Mesh(
+    new THREE.BoxGeometry(0.72, 0.52, 0.24),
+    new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.35 }),
+  );
+  ecgBezel.position.y = 1.24;
+  const ecgTex = createEcgTexture();
+  const ecgScreenMat = new THREE.MeshStandardMaterial({
+    map: ecgTex,
+    emissive: 0x22c55e,
+    emissiveMap: ecgTex,
+    emissiveIntensity: 0.85,
+    roughness: 0.2,
+  });
+  const ecgScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.4), ecgScreenMat);
+  ecgScreen.position.set(0, 1.24, 0.125);
+  ecgGroup.add(cartBase, ecgBezel, ecgScreen);
+  group.add(ecgGroup);
+
+  // 4F. IV Drip Stand next to VIP Bed #1
+  const ivGroup = new THREE.Group();
+  ivGroup.position.set(5.9, 0, -1.25);
+  const ivBase = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.08, 8), chromeMat);
+  ivBase.position.y = 0.04;
+  const ivPole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.25, 6), chromeMat);
+  ivPole.position.y = 1.15;
+  const ivHook = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.04, 0.04), chromeMat);
+  ivHook.position.y = 2.24;
+  const salineBag = new THREE.Mesh(
+    new THREE.BoxGeometry(0.18, 0.34, 0.09),
+    new THREE.MeshStandardMaterial({
+      color: 0x7dd3fc,
+      emissive: 0x38bdf8,
+      emissiveIntensity: 0.22,
+      transparent: true,
+      opacity: 0.78,
+    }),
+  );
+  salineBag.position.set(-0.14, 1.98, 0);
+  ivGroup.add(ivBase, ivPole, ivHook, salineBag);
+  group.add(ivGroup);
+
+  // 4G. Medicine & First-Aid Supply Cabinet (Back-Center-Right: x = 0.8, z = -5.1)
+  const cabGroup = new THREE.Group();
+  cabGroup.position.set(0.8, 0, -5.15);
+  const cabBody = new THREE.Mesh(
+    new THREE.BoxGeometry(2.2, 2.25, 0.62),
+    new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.45 }),
+  );
+  cabBody.position.y = 1.125;
+  cabGroup.add(cabBody);
+  const cabGlass = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.96, 0.06), glassMat);
+  cabGlass.position.set(0, 1.62, 0.31);
+  cabGroup.add(cabGlass);
+  const bottleColors = [0xef4444, 0x22c55e, 0xf59e0b, 0x3b82f6, 0xec4899];
+  for (let i = 0; i < 5; i++) {
+    const bottle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.08, 0.28, 7),
+      new THREE.MeshStandardMaterial({ color: bottleColors[i], roughness: 0.3 }),
+    );
+    bottle.position.set(-0.7 + i * 0.35, 1.44, 0.14);
+    cabGroup.add(bottle);
+  }
+  const cabCrossV = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.44, 0.05), redMat);
+  cabCrossV.position.set(0, 0.56, 0.32);
+  const cabCrossH = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.12, 0.05), redMat);
+  cabCrossH.position.set(0, 0.56, 0.32);
+  cabGroup.add(cabCrossV, cabCrossH);
+  group.add(cabGroup);
+
+  return {
+    group,
+    signMesh,
+    windowMats,
+    def,
+    hospitalInterior: {
+      slidingDoorLeft,
+      slidingDoorRight,
+      ecgScreenMat,
+      interiorLight,
+      doorOpenAmount: 0,
+    },
+  };
 }
 
 export function createBuildingModel(
@@ -623,6 +1374,10 @@ export function createBuildingModel(
   plasterBump: THREE.Texture,
   maxAnisotropy: number,
 ): BuildingMeshHandle {
+  if (def.category === 'hospital') {
+    return buildWalkInHospitalBuilding(def, owned, plasterBump, maxAnisotropy);
+  }
+
   const group = new THREE.Group();
   group.position.set(def.x, 0, def.z);
   group.rotation.y = def.rotationY;
@@ -799,35 +1554,6 @@ export function createBuildingModel(
     );
     pole.position.set(-def.width * 0.36, 2.2, def.depth / 2 + 0.45);
     group.add(pole);
-  } else if (def.category === 'hospital') {
-    // Glowing 3D Red Medical Cross & Emergency 108 Entrance Canopy!
-    const crossMat = new THREE.MeshStandardMaterial({
-      color: 0xdc2626,
-      emissive: 0xef4444,
-      emissiveIntensity: 0.6,
-      roughness: 0.25,
-    });
-    const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.65, 2.2, 0.25), crossMat);
-    crossV.position.set(0, def.height - 1.6, def.depth / 2 + 0.3);
-    const crossH = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.65, 0.25), crossMat);
-    crossH.position.set(0, def.height - 1.6, def.depth / 2 + 0.3);
-    group.add(crossV, crossH);
-
-    // Ambulance drive-up emergency porch pillars
-    for (const sx of [-4.2, 4.2]) {
-      const col = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.26, 0.28, 3.8, 8),
-        new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.4 }),
-      );
-      col.position.set(sx, 2.1, def.depth / 2 + 2.8);
-      group.add(col);
-    }
-    const porchRoof = new THREE.Mesh(
-      new THREE.BoxGeometry(9.4, 0.35, 3.4),
-      new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.4 }),
-    );
-    porchRoof.position.set(0, 4.1, def.depth / 2 + 1.7);
-    group.add(porchRoof);
   } else if (def.category === 'police_station') {
     const siren = new THREE.Mesh(
       new THREE.CylinderGeometry(0.4, 0.45, 0.7, 10),
