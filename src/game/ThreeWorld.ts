@@ -47,6 +47,7 @@ import {
   resolveCircleWorldCollision,
 } from './gameLogic';
 import {
+  AirportComplexRig,
   BuildingMeshHandle,
   CoconutPalmRig,
   FallingCoconutRig,
@@ -56,6 +57,7 @@ import {
   TrafficLightRig,
   applyPlayerAppearance,
   createAdBoard300x250Model,
+  createAirportComplexModel,
   createAutoStandModel,
   createBuildingModel,
   createBuiltShopModel,
@@ -73,6 +75,12 @@ import {
   createTrafficLightModel,
   createZebraCrossing,
 } from './models';
+import {
+  AIRPORT_RUNWAY,
+  isAircraftType,
+  stepAirplanePhysics,
+  stepGroundVehiclePhysics,
+} from './vehiclePhysics';
 import { VehicleModelRig, createDetailedVehicleModel } from './vehicleModels';
 import {
   createGrassTexture,
@@ -126,11 +134,18 @@ interface LiveVehicle {
   name: string;
   type: VehicleDef['type'];
   x: number;
+  y: number;
   z: number;
   yaw: number;
+  pitch: number;
+  roll: number;
   speed: number;
   maxSpeed: number;
   steerAngle: number;
+  steerInput: number;
+  isAircraft: boolean;
+  flightState: 'ground' | 'takeoff_ready' | 'airborne';
+  autoLanding: boolean;
   hasSiren: boolean;
   sirenOn: boolean;
   rig: VehicleModelRig;
@@ -237,6 +252,7 @@ export class ThreeWorld {
   private nightLights: THREE.PointLight[] = [];
   private lampBulbMats: THREE.MeshStandardMaterial[] = [];
   private windowMats: THREE.MeshStandardMaterial[] = [];
+  private airportRig: AirportComplexRig | null = null;
 
   private sheru: SheruModelRig;
   private playerX = PLAYER_SPAWN.x;
@@ -535,9 +551,9 @@ export class ThreeWorld {
     ground.receiveShadow = true;
     this.scene.add(ground);
 
-    // Distant coastal backwater ocean ring beyond the extended town perimeter
+    // Distant coastal backwater ocean ring beyond the extended town & airport perimeter
     const water = new THREE.Mesh(
-      new THREE.RingGeometry(WORLD_RADIUS + 34, 360, 48),
+      new THREE.RingGeometry(WORLD_RADIUS + 34, 460, 48),
       new THREE.MeshStandardMaterial({
         color: 0x2176ae,
         roughness: 0.22,
@@ -547,6 +563,10 @@ export class ThreeWorld {
     water.rotation.x = -Math.PI / 2;
     water.position.y = -0.12;
     this.scene.add(water);
+
+    // Kerala International Airport (COK) Complex: 196m Runway 09/27, Apron, Taxiways, ATC Tower, Hangar & Windsock
+    this.airportRig = createAirportComplexModel(this.maxAnisotropy);
+    this.scene.add(this.airportRig.group);
 
     // Extended Crossroads Roads (offset y = 0.025 to prevent any Z-fighting!)
     const roadTexNS = createRoadTexture(this.maxAnisotropy);
@@ -845,13 +865,15 @@ export class ThreeWorld {
       restTimer: 0,
     };
 
-    // Natural perimeter palm & hill ring around extended WORLD_RADIUS (never a bare box wall!)
+    // Natural perimeter palm & hill ring around extended WORLD_RADIUS (leaving Airport approach corridor 100% clear!)
     const hillMat = new THREE.MeshStandardMaterial({ color: 0x3b7a3e, roughness: 0.92 });
     for (let i = 0; i < 56; i++) {
       const angle = (i / 56) * Math.PI * 2;
       const r = WORLD_RADIUS + 4 + (i % 3) * 4;
       const hx = Math.cos(angle) * r;
       const hz = Math.sin(angle) * r;
+      // Keep North Airport & East-West Runway 09/27 approach corridor completely open!
+      if (hz < -104 || Math.abs(hz - AIRPORT_RUNWAY.centerZ) < 42) continue;
       const palm = createCoconutPalm(9 + (i % 4) * 1.4, 1.35);
       palm.position.set(hx, 0, hz);
       palm.rotation.y = angle + Math.PI;
@@ -955,11 +977,18 @@ export class ThreeWorld {
         name: v.name,
         type: v.type,
         x: spawnDef.x,
+        y: 0,
         z: spawnDef.z,
         yaw: spawnDef.rotationY,
+        pitch: 0,
+        roll: 0,
         speed: 0,
         maxSpeed: v.maxSpeed,
         steerAngle: 0,
+        steerInput: 0,
+        isAircraft: Boolean(v.isAircraft || isAircraftType(v.type)),
+        flightState: 'ground',
+        autoLanding: false,
         hasSiren: Boolean(v.hasSiren || rig.hasSiren),
         sirenOn: false,
         rig,
@@ -1284,18 +1313,26 @@ export class ThreeWorld {
   }
 
   public spawnAndEnterVehicle(def: VehicleDef) {
-    // Summon any of the 28 vehicles from the Garage right beside Sheru and enter it!
+    // Summon any vehicle from Garage; Aeroplanes spawn cleanly at Runway 09 threshold facing straight down the 196m runway!
+    const aircraft = Boolean(def.isAircraft || isAircraftType(def.type));
     let existing = this.liveVehicles.find((v) => v.id === def.id);
-    const spawnX = this.playerX + Math.sin(this.playerYaw) * 2.2;
-    const spawnZ = this.playerZ + Math.cos(this.playerYaw) * 2.2;
-    const safe = resolveCircleWorldCollision(spawnX, spawnZ, 1.8, this.colliders);
+    const spawnX = aircraft
+      ? AIRPORT_RUNWAY.takeoffStartX
+      : this.playerX + Math.sin(this.playerYaw) * 2.2;
+    const spawnZ = aircraft
+      ? AIRPORT_RUNWAY.takeoffStartZ
+      : this.playerZ + Math.cos(this.playerYaw) * 2.2;
+    const spawnYaw = aircraft ? AIRPORT_RUNWAY.takeoffYaw : this.playerYaw;
+    const safe = aircraft
+      ? { x: spawnX, z: spawnZ }
+      : resolveCircleWorldCollision(spawnX, spawnZ, 1.8, this.colliders);
 
     if (!existing) {
       const spawnDef: VehicleDef = {
         ...def,
         x: safe.x,
         z: safe.z,
-        rotationY: this.playerYaw,
+        rotationY: spawnYaw,
       };
       const rig = createDetailedVehicleModel(spawnDef);
       this.scene.add(rig.root);
@@ -1304,11 +1341,18 @@ export class ThreeWorld {
         name: def.name,
         type: def.type,
         x: safe.x,
+        y: 0,
         z: safe.z,
-        yaw: this.playerYaw,
+        yaw: spawnYaw,
+        pitch: 0,
+        roll: 0,
         speed: 0,
         maxSpeed: def.maxSpeed,
         steerAngle: 0,
+        steerInput: 0,
+        isAircraft: aircraft,
+        flightState: 'ground',
+        autoLanding: false,
         hasSiren: Boolean(def.hasSiren || rig.hasSiren),
         sirenOn: false,
         rig,
@@ -1317,24 +1361,80 @@ export class ThreeWorld {
       this.liveVehicles.push(existing);
     } else {
       existing.x = safe.x;
+      existing.y = 0;
       existing.z = safe.z;
-      existing.yaw = this.playerYaw;
+      existing.yaw = spawnYaw;
+      existing.pitch = 0;
+      existing.roll = 0;
       existing.speed = 0;
+      existing.steerInput = 0;
+      existing.flightState = 'ground';
+      existing.autoLanding = false;
       existing.mesh.position.set(existing.x, 0, existing.z);
       existing.mesh.rotation.y = existing.yaw;
+      if (existing.rig.bodyPivot) existing.rig.bodyPivot.rotation.set(0, 0, 0);
     }
 
+    this.inHospital = false;
     this.autopilotDest = null;
     this.activeVehicleId = existing.id;
     this.sheru.root.visible = false;
     this.playerX = existing.x;
+    this.playerY = 0;
     this.playerZ = existing.z;
     this.playerYaw = existing.yaw;
     this.camYaw = existing.yaw;
+    this.camPitch = aircraft ? 0.2 : 0.26;
+    this.snapCameraImmediate();
     soundEngine.playHorn();
-    this.spawnParticleBurst(existing.x, 1.2, existing.z, 18, 0xffd166);
+    this.spawnParticleBurst(existing.x, 1.4, existing.z, 18, aircraft ? 0x38bdf8 : 0xffd166);
     this.callbacks.onVehicleEnter(existing.id);
     this.hudThrottle = 1;
+  }
+
+  public triggerAutoLand(): boolean {
+    if (!this.activeVehicleId) return false;
+    const veh = this.liveVehicles.find((v) => v.id === this.activeVehicleId);
+    if (!veh || !veh.isAircraft) return false;
+    veh.autoLanding = !veh.autoLanding;
+    this.hudThrottle = 1;
+    return veh.autoLanding;
+  }
+
+  public teleportToAirport() {
+    this.activeVehicleId = null;
+    this.autopilotDest = null;
+    this.inHospital = false;
+    this.sheru.root.visible = true;
+    this.playerX = -2;
+    this.playerY = 0;
+    this.playerZ = -129;
+    this.playerYaw = Math.PI; // Facing North directly toward the Runway, parked Jets & ATC Tower!
+    this.camYaw = Math.PI;
+    this.camPitch = 0.22;
+    this.sheru.root.position.set(this.playerX, 0, this.playerZ);
+    this.sheru.root.rotation.y = this.playerYaw;
+    this.snapCameraImmediate();
+    this.spawnParticleBurst(this.playerX, 1.2, this.playerZ, 18, 0x38bdf8);
+    this.hudThrottle = 1;
+  }
+
+  private snapCameraImmediate() {
+    const activeVeh = this.activeVehicleId
+      ? this.liveVehicles.find((v) => v.id === this.activeVehicleId)
+      : null;
+    const isFlying = Boolean(activeVeh?.isAircraft);
+    const followDist = isFlying ? 17.5 : this.activeVehicleId ? 10.5 : this.inHospital ? 4.4 : 7.6;
+    const followHeight = isFlying ? 5.8 : this.activeVehicleId ? 4.4 : this.inHospital ? 2.05 : 3.2;
+    const horizDist = Math.cos(this.camPitch) * followDist;
+    const vertOffset = Math.sin(this.camPitch) * followDist + followHeight * 0.45;
+    const desiredX = this.playerX - Math.sin(this.camYaw) * horizDist;
+    const desiredZ = this.playerZ - Math.cos(this.camYaw) * horizDist;
+    const desiredY = Math.max(1.6, this.playerY + vertOffset);
+    this.camCurrentPos.set(desiredX, desiredY, desiredZ);
+    this.camera.position.copy(this.camCurrentPos);
+    this.camLookTarget.set(this.playerX, this.playerY + (isFlying ? 2.1 : 1.85), this.playerZ);
+    this.camera.lookAt(this.camLookTarget);
   }
 
   public setAutopilotDestination(dest: AutoDestination | null) {
@@ -1394,10 +1494,16 @@ export class ThreeWorld {
       }
     }
     veh.speed = 0;
+    veh.y = 0;
+    veh.pitch = 0;
+    veh.roll = 0;
+    veh.autoLanding = false;
+    veh.flightState = 'ground';
     veh.sirenOn = false;
     soundEngine.stopSiren();
     veh.mesh.position.set(veh.x, 0, veh.z);
     veh.mesh.rotation.y = veh.yaw;
+    if (veh.rig.bodyPivot) veh.rig.bodyPivot.rotation.set(0, 0, 0);
     this.autopilotDest = null;
 
     this.callbacks.onVehicleParked(veh.id, veh.x, veh.z, veh.yaw, bayName);
@@ -1423,11 +1529,18 @@ export class ThreeWorld {
         name: cat.name,
         type: 'ambulance',
         x: 54,
+        y: 0,
         z: -36,
         yaw: -Math.PI / 2,
+        pitch: 0,
+        roll: 0,
         speed: 0,
         maxSpeed: 45,
         steerAngle: 0,
+        steerInput: 0,
+        isAircraft: false,
+        flightState: 'ground',
+        autoLanding: false,
         hasSiren: true,
         sirenOn: true,
         rig,
@@ -1638,15 +1751,30 @@ export class ThreeWorld {
   public triggerInteract() {
     if (this.mode !== 'playing' || this.modalOpen) return;
     if (this.activeVehicleId) {
-      // Exit vehicle safely beside it
+      // Exit vehicle safely beside it (if airborne, land smoothly on Airport Apron so Sheru stays safe!)
       const veh = this.liveVehicles.find((v) => v.id === this.activeVehicleId);
       this.activeVehicleId = null;
       this.autopilotDest = null;
       if (veh) {
         veh.sirenOn = false;
+        veh.autoLanding = false;
         soundEngine.stopSiren();
-        const exitX = veh.x + Math.cos(veh.yaw) * 2.4;
-        const exitZ = veh.z - Math.sin(veh.yaw) * 2.4;
+        if (veh.isAircraft && veh.y > 1.2) {
+          veh.x = AIRPORT_RUNWAY.takeoffStartX;
+          veh.y = 0;
+          veh.z = AIRPORT_RUNWAY.takeoffStartZ;
+          veh.yaw = AIRPORT_RUNWAY.takeoffYaw;
+          veh.pitch = 0;
+          veh.roll = 0;
+          veh.speed = 0;
+          veh.flightState = 'ground';
+          veh.mesh.position.set(veh.x, 0, veh.z);
+          veh.mesh.rotation.y = veh.yaw;
+          if (veh.rig.bodyPivot) veh.rig.bodyPivot.rotation.set(0, 0, 0);
+        }
+        const sideOffset = veh.isAircraft ? 5.6 : 2.4;
+        const exitX = veh.x + Math.cos(veh.yaw) * sideOffset;
+        const exitZ = veh.z - Math.sin(veh.yaw) * sideOffset;
         const safe = resolveCircleWorldCollision(exitX, exitZ, 0.85, this.colliders);
         this.playerX = safe.x;
         this.playerZ = safe.z;
@@ -1823,20 +1951,22 @@ export class ThreeWorld {
       );
     }
 
-    // Vehicles
+    // Vehicles & Flyable Aeroplanes
     for (const v of this.liveVehicles) {
       const dist = Math.hypot(v.x - this.playerX, v.z - this.playerZ);
       consider(
         {
           kind: 'vehicle',
           id: v.id,
-          label: `Drive ${v.name}`,
-          sublabel: 'WASD Steer · E Exit · H Horn',
+          label: v.isAircraft ? `Fly ${v.name}` : `Drive ${v.name}`,
+          sublabel: v.isAircraft
+            ? 'W Throttle · A/D Turn · Space Climb · Shift Land'
+            : 'Easy WASD Steer · Space Brake · E Exit · H Horn',
           distance: dist,
           x: v.x,
           z: v.z,
         },
-        4.2,
+        v.isAircraft ? 7.2 : 4.6,
       );
     }
 
@@ -1999,10 +2129,117 @@ export class ThreeWorld {
     const running =
       this.keysHeld.has('ShiftLeft') || this.keysHeld.has('ShiftRight') || this.touchRunning;
 
-    // DRIVING VEHICLE MODE (up to 180 km/h, Handbrake Space, Wheel Spin, Steering, Auto-Destination Autopilot!)
+    // DRIVING & FLYING MODE (Easy Arcade Car Driving + Easy Runway Takeoff & Sky Flight!)
     if (this.activeVehicleId) {
       const veh = this.liveVehicles.find((v) => v.id === this.activeVehicleId);
       if (veh) {
+        if (veh.isAircraft) {
+          // =====================================================================
+          // EASY ARCADE AEROPLANE FLIGHT (Runway Takeoff, Banked Turns, Auto-Land)
+          // =====================================================================
+          const climbKey = this.keysHeld.has('Space');
+          const descendKey =
+            running || this.keysHeld.has('KeyC') || this.keysHeld.has('KeyQ');
+          if (
+            veh.autoLanding &&
+            (Math.abs(forward) > 0.1 || Math.abs(strafe) > 0.1 || climbKey)
+          ) {
+            veh.autoLanding = false;
+          }
+
+          const planeRes = stepAirplanePhysics(
+            {
+              x: veh.x,
+              y: veh.y,
+              z: veh.z,
+              yaw: veh.yaw,
+              pitch: veh.pitch,
+              roll: veh.roll,
+              speed: veh.speed,
+              maxSpeed: veh.maxSpeed,
+              steerInput: veh.steerInput,
+            },
+            {
+              throttle: forward,
+              turn: strafe,
+              climb: climbKey,
+              descend: descendKey,
+              autoLand: veh.autoLanding,
+            },
+            dt,
+            WORLD_RADIUS + 80,
+          );
+
+          // Ground-only soft building collision (when airborne > 2.2m, fly cleanly over everything!)
+          let finalX = planeRes.x;
+          let finalZ = planeRes.z;
+          let finalSpeed = planeRes.speed;
+          if (planeRes.y < 2.2) {
+            const gRes = resolveCircleWorldCollision(
+              finalX,
+              finalZ,
+              2.8,
+              this.colliders,
+              WORLD_RADIUS + 20,
+            );
+            if (gRes.collided) {
+              finalX = gRes.x;
+              finalZ = gRes.z;
+              finalSpeed *= 0.65;
+            }
+          }
+
+          if (planeRes.touchedDown) {
+            veh.autoLanding = false;
+            this.spawnParticleBurst(finalX, 0.4, finalZ, 12, 0xe2e8f0);
+          }
+
+          veh.x = finalX;
+          veh.y = planeRes.y;
+          veh.z = finalZ;
+          veh.yaw = planeRes.yaw;
+          veh.pitch = planeRes.pitch;
+          veh.roll = planeRes.roll;
+          veh.speed = finalSpeed;
+          veh.steerInput = planeRes.steerInput;
+          veh.flightState = planeRes.flightState;
+
+          veh.mesh.position.set(veh.x, veh.y, veh.z);
+          veh.mesh.rotation.y = veh.yaw;
+          if (veh.rig.bodyPivot) {
+            veh.rig.bodyPivot.rotation.set(-veh.pitch, 0, veh.roll);
+          }
+
+          // Spin propellers / jet turbine fans & ground wheels
+          const propSpeed = 8 + Math.abs(veh.speed) * 1.4;
+          if (veh.rig.propellers) {
+            for (const prop of veh.rig.propellers) {
+              prop.rotation.z += propSpeed * dt;
+            }
+          }
+          if (veh.y < 0.35) {
+            for (const w of veh.rig.wheels) {
+              w.rotation.x += veh.speed * dt * 2.2;
+            }
+          }
+
+          this.playerX = veh.x;
+          this.playerY = veh.y;
+          this.playerZ = veh.z;
+          this.playerYaw = veh.yaw;
+
+          // Smooth cinematic chase camera tracking behind the airplane
+          const diff = Math.atan2(
+            Math.sin(veh.yaw - this.camYaw),
+            Math.cos(veh.yaw - this.camYaw),
+          );
+          this.camYaw += diff * (1 - Math.exp(-5.5 * dt));
+          return;
+        }
+
+        // =====================================================================
+        // EASY ARCADE GROUND DRIVING (Speed-sensitive steering, ABS brake, wall glide)
+        // =====================================================================
         const handbrake = this.keysHeld.has('Space');
         // Cancel autopilot if user manually presses W/S/A/D
         if (this.autopilotDest && (Math.abs(forward) > 0.1 || Math.abs(strafe) > 0.1)) {
@@ -2029,8 +2266,8 @@ export class ThreeWorld {
               }
             }
           } else {
-            // Follow paved Kerala town roads (N-S X=0 and E-W Z=-32, -4, 44) so vehicles never snag on buildings
-            const roadZs = [-32, -4, 44];
+            // Follow paved Kerala town roads (including Airport Access at z=-122!)
+            const roadZs = [-122, -72, -32, -4, 34, 72];
             let destRoadZ = -4;
             let bestRoadDist = Infinity;
             for (const rz of roadZs) {
@@ -2047,7 +2284,6 @@ export class ThreeWorld {
             const nearCenterAve = Math.abs(veh.x) < 8;
             if (!onDestRoad && dist > 16) {
               if (!nearCenterAve) {
-                // First merge onto nearest E-W road toward X=0
                 let curRoadZ = -4;
                 let bestCur = Infinity;
                 for (const rz of roadZs) {
@@ -2060,7 +2296,6 @@ export class ThreeWorld {
                 steerTargetX = 0;
                 steerTargetZ = curRoadZ;
               } else {
-                // Cruise along Central Avenue X=0 to the destination's E-W road
                 steerTargetX = 0;
                 steerTargetZ = destRoadZ;
               }
@@ -2073,7 +2308,6 @@ export class ThreeWorld {
             veh.steerAngle = THREE.MathUtils.clamp(yawErr, -0.58, 0.58);
             veh.yaw += THREE.MathUtils.clamp(yawErr, -3.4 * dt, 3.4 * dt);
 
-            // Auto-horn / auto-siren whenever another vehicle is ahead!
             let vehicleAhead = false;
             const fwdX = Math.sin(veh.yaw);
             const fwdZ = Math.cos(veh.yaw);
@@ -2104,7 +2338,6 @@ export class ThreeWorld {
               }
             }
 
-            // Corner smoothly on turns, accelerate up to 180 km/h on straight roads
             const turnFactor = Math.abs(yawErr) > 0.45 ? 0.55 : 1.0;
             const targetCruise =
               Math.min(veh.maxSpeed, dist > 18 ? veh.maxSpeed : Math.max(12, dist * 1.4)) *
@@ -2112,35 +2345,41 @@ export class ThreeWorld {
             veh.speed += (targetCruise - veh.speed) * Math.min(1, dt * 3.2);
           }
         } else {
-          // Manual WASD + Shift Turbo + Space Handbrake (up to 180 km/h = 45 u/s)
-          const accel = forward * (running ? 34 : 24);
-          veh.speed += accel * dt;
-          if (handbrake) {
-            veh.speed *= Math.exp(-8.5 * dt);
-          } else if (Math.abs(forward) < 0.05) {
-            veh.speed *= Math.exp(-2.8 * dt);
-          }
-          veh.speed = THREE.MathUtils.clamp(veh.speed, -veh.maxSpeed * 0.42, veh.maxSpeed);
-
-          veh.steerAngle = THREE.MathUtils.lerp(veh.steerAngle, -strafe * 0.48, 1 - Math.exp(-10 * dt));
-          if (Math.abs(veh.speed) > 0.35) {
-            const turnDir = veh.speed >= 0 ? 1 : -1;
-            const driftBoost = handbrake ? 1.45 : 1.0;
-            veh.yaw -= strafe * 2.25 * driftBoost * dt * turnDir;
-          }
+          // Super-easy speed-sensitive arcade driving!
+          const nextPhys = stepGroundVehiclePhysics(
+            {
+              speed: veh.speed,
+              yaw: veh.yaw,
+              steerAngle: veh.steerAngle,
+              steerInput: veh.steerInput,
+              maxSpeed: veh.maxSpeed,
+            },
+            {
+              forward,
+              strafe,
+              boost: running,
+              handbrake,
+            },
+            dt,
+          );
+          veh.speed = nextPhys.speed;
+          veh.yaw = nextPhys.yaw;
+          veh.steerAngle = nextPhys.steerAngle;
+          veh.steerInput = nextPhys.steerInput;
         }
 
         const nextX = veh.x + Math.sin(veh.yaw) * veh.speed * dt;
         const nextZ = veh.z + Math.cos(veh.yaw) * veh.speed * dt;
-        const res = resolveCircleWorldCollision(nextX, nextZ, 1.55, this.colliders);
-        const vehPalmHit = checkPalmTreeCollision(res.x, res.z, 1.55, this.livePalms, 0.55);
+        const res = resolveCircleWorldCollision(nextX, nextZ, 1.45, this.colliders);
+        const vehPalmHit = checkPalmTreeCollision(res.x, res.z, 1.45, this.livePalms, 0.55);
         if (res.collided || vehPalmHit.hit) {
           if (this.autopilotDest) {
             veh.yaw += 0.55 * dt * 4;
-            veh.speed = Math.max(6, veh.speed * 0.5);
+            veh.speed = Math.max(6, veh.speed * 0.55);
           } else {
-            veh.speed *= -0.25;
-            this.camShakeTrauma = Math.min(1, this.camShakeTrauma + 0.25);
+            // Smooth wall glide instead of jarring backwards bounce!
+            veh.speed *= 0.65;
+            this.camShakeTrauma = Math.min(0.45, this.camShakeTrauma + 0.12);
           }
           if (vehPalmHit.hit && vehPalmHit.palmIndex >= 0) {
             const bumpedPalm = this.livePalms[vehPalmHit.palmIndex];
@@ -2163,6 +2402,7 @@ export class ThreeWorld {
         }
 
         this.playerX = veh.x;
+        this.playerY = 0;
         this.playerZ = veh.z;
         this.playerYaw = veh.yaw;
 
@@ -2183,7 +2423,6 @@ export class ThreeWorld {
             if (nd < 2.05) {
               this.accidentCooldown = 14;
               veh.speed = 0;
-              // Gently bounce NPC safely aside
               const pushAng = Math.atan2(n.x - veh.x, n.z - veh.z);
               n.x += Math.sin(pushAng) * 2.2;
               n.z += Math.cos(pushAng) * 2.2;
@@ -2196,9 +2435,9 @@ export class ThreeWorld {
           }
         }
 
-        // Gently follow behind vehicle
+        // Responsive easy-drive follow camera smoothly stays right behind the car!
         const diff = Math.atan2(Math.sin(veh.yaw - this.camYaw), Math.cos(veh.yaw - this.camYaw));
-        this.camYaw += diff * (1 - Math.exp(-3.0 * dt));
+        this.camYaw += diff * (1 - Math.exp(-6.2 * dt));
       }
       return;
     }
@@ -2855,6 +3094,16 @@ export class ThreeWorld {
       }
     }
 
+    // Animate Kerala International Airport ATC radar dish, windsock & aviation beacon
+    if (this.airportRig) {
+      this.airportRig.radarDish.rotation.y += dt * 1.45;
+      this.airportRig.windsock.rotation.y = Math.sin(this.elapsed * 2.1) * 0.28;
+      this.airportRig.windsock.rotation.z = Math.sin(this.elapsed * 3.7) * 0.08;
+      const pulse = 0.6 + Math.abs(Math.sin(this.elapsed * 3.2)) * 1.8;
+      this.airportRig.beaconMat.emissiveIntensity = pulse;
+      this.airportRig.runwayLightMat.emissiveIntensity = 0.9 + Math.sin(this.elapsed * 2.0) * 0.45;
+    }
+
     // Update pooled particles
     let anyActive = false;
     for (let i = 0; i < this.particles.length; i++) {
@@ -2899,8 +3148,13 @@ export class ThreeWorld {
       return;
     }
 
-    const followDist = this.activeVehicleId ? 10.5 : this.inHospital ? 4.4 : 7.6;
-    const followHeight = this.activeVehicleId ? 4.4 : this.inHospital ? 2.05 : 3.2;
+    const activeVeh = this.activeVehicleId
+      ? this.liveVehicles.find((v) => v.id === this.activeVehicleId)
+      : null;
+    const isFlying = Boolean(activeVeh?.isAircraft);
+
+    const followDist = isFlying ? 17.5 : this.activeVehicleId ? 10.5 : this.inHospital ? 4.4 : 7.6;
+    const followHeight = isFlying ? 5.8 : this.activeVehicleId ? 4.4 : this.inHospital ? 2.05 : 3.2;
 
     const horizDist = Math.cos(this.camPitch) * followDist;
     const vertOffset = Math.sin(this.camPitch) * followDist + followHeight * 0.45;
@@ -2928,7 +3182,7 @@ export class ThreeWorld {
         HOSPITAL_INTERIOR_BOUNDS.minZ + 0.75,
         maxCamZ,
       );
-    } else {
+    } else if (!isFlying || this.playerY < 3.5) {
       // Pull camera in smoothly if behind a building collider
       const camSafe = resolveCircleWorldCollision(desiredX, desiredZ, 0.7, this.colliders);
       desiredX = camSafe.x;
@@ -2975,19 +3229,32 @@ export class ThreeWorld {
       speedKmh: Math.min(180, Math.round(speedVal * 4)),
       district: this.inHospital
         ? 'Hospital Interior'
-        : getDistrictAt(this.playerX, this.playerZ),
+        : activeVeh?.isAircraft && activeVeh.y > 4
+          ? 'Kerala Sky Airspace'
+          : getDistrictAt(this.playerX, this.playerZ),
       inVehicleId: this.activeVehicleId,
       inVehicleName: activeVeh?.name ?? null,
+      inVehicleIsAircraft: activeVeh?.isAircraft ?? false,
+      altitude: activeVeh?.isAircraft ? Math.round(activeVeh.y) : 0,
+      flightState: activeVeh?.isAircraft ? activeVeh.flightState : undefined,
       inVehicleHasSiren: activeVeh?.hasSiren ?? false,
       sirenActive: activeVeh?.sirenOn ?? false,
-      autopilotDestName: this.autopilotDest?.name ?? null,
+      autopilotDestName: activeVeh?.autoLanding
+        ? 'Auto-Land Runway 09'
+        : this.autopilotDest?.name ?? null,
       inPool: this.inPool,
       nearby: this.activeVehicleId ? null : this.findNearestInteractable(),
       timePhase: getTimeOfDayPhase(this.timeOfDay),
       timeOfDay: this.timeOfDay,
       npcs: this.liveNpcs.map((n) => ({ id: n.id, x: n.x, z: n.z, isBoss: n.isBoss })),
       vehicles: [
-        ...this.liveVehicles.map((v) => ({ id: v.id, x: v.x, z: v.z, isEmergency: v.hasSiren })),
+        ...this.liveVehicles.map((v) => ({
+          id: v.id,
+          x: v.x,
+          z: v.z,
+          isEmergency: v.hasSiren,
+          isAircraft: v.isAircraft,
+        })),
         ...this.aiTraffic
           .filter((a) => a.active)
           .map((a) => ({ id: a.id, x: a.x, z: a.z, isEmergency: a.isEmergency })),

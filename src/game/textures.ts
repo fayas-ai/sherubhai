@@ -267,3 +267,127 @@ export function createAdBoard300x250Texture(
   return tex;
 }
 
+/**
+ * Crisp high-contrast 196m x 22m Kerala International Airport Runway (09 / 27) asphalt texture
+ * with piano-key thresholds, touchdown zone bars, dashed centerline & subtle rubber tire marks.
+ */
+export function createRunwayTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 2048;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+
+  // Deep fresh aviation asphalt
+  ctx.fillStyle = '#252b33';
+  ctx.fillRect(0, 0, 2048, 256);
+
+  // Subtle weathered grain & centerline tire touchdown rubber streaks
+  for (let i = 0; i < 900; i++) {
+    const gx = (i * 197) % 2048;
+    const gy = (i * 83) % 256;
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.06)';
+    ctx.fillRect(gx, gy, 8, 3);
+  }
+  ctx.fillStyle = 'rgba(12,14,18,0.42)';
+  ctx.fillRect(260, 96, 360, 64);
+  ctx.fillRect(1428, 96, 360, 64);
+
+  // Solid crisp white runway edge lines
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(16, 12, 2016, 7);
+  ctx.fillRect(16, 237, 2016, 7);
+
+  // Piano-key threshold markings on both ends (09 on West/left, 27 on East/right)
+  for (const startX of [28, 1936]) {
+    for (let k = 0; k < 6; k++) {
+      const y = 28 + k * 34;
+      ctx.fillRect(startX, y, 84, 18);
+    }
+  }
+
+  // Runway designator numbers ("09" left, "27" right)
+  ctx.save();
+  ctx.fillStyle = '#f8fafc';
+  ctx.font = '900 58px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.save();
+  ctx.translate(185, 128);
+  ctx.rotate(Math.PI / 2);
+  ctx.fillText('09', 0, 0);
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(1863, 128);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('27', 0, 0);
+  ctx.restore();
+  ctx.restore();
+
+  // Aiming point blocks (wide white rectangles)
+  for (const ax of [340, 1618]) {
+    ctx.fillRect(ax, 54, 90, 26);
+    ctx.fillRect(ax, 176, 90, 26);
+  }
+
+  // Touchdown zone bars
+  for (const tx of [480, 560, 1408, 1488]) {
+    ctx.fillRect(tx, 66, 48, 14);
+    ctx.fillRect(tx, 176, 48, 14);
+  }
+
+  // Dashed white centerline along the entire runway
+  for (let cx = 250; cx < 1790; cx += 92) {
+    ctx.fillRect(cx, 122, 54, 12);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}
+
+/**
+ * Airport Apron & Taxiway concrete tarmac texture with crisp yellow aircraft guide lines.
+ */
+export function createApronTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#525b66';
+  ctx.fillRect(0, 0, 512, 256);
+
+  // Subtle concrete slab seams
+  ctx.strokeStyle = 'rgba(28,34,42,0.28)';
+  ctx.lineWidth = 2;
+  for (let x = 0; x <= 512; x += 64) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, 256);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= 256; y += 64) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(512, y);
+    ctx.stroke();
+  }
+
+  // Yellow horizontal taxiway lead-in line & gate T-bars
+  ctx.fillStyle = '#facc15';
+  ctx.fillRect(16, 124, 480, 8);
+  for (const gx of [128, 256, 384]) {
+    ctx.fillRect(gx - 3, 44, 6, 84);
+    ctx.fillRect(gx - 22, 44, 44, 6);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}
+
+

@@ -717,7 +717,31 @@ export default function App() {
   const handleSpawnAndDrive = (veh: VehicleDef) => {
     setActivePanel('none');
     worldRef.current?.spawnAndEnterVehicle(veh);
-    showToast(`Driving ${veh.name}! Top Speed ${veh.maxKmh ?? Math.round(veh.maxSpeed * 4)} KM/H`);
+    if (veh.isAircraft) {
+      showToast(
+        `Cleared for Takeoff in ${veh.name} on Runway 09! Hold W + Press Space to fly!`,
+      );
+    } else {
+      showToast(
+        `Easy Driving ${veh.name}! Top Speed ${veh.maxKmh ?? Math.round(veh.maxSpeed * 4)} KM/H`,
+      );
+    }
+  };
+
+  const handleGoToAirport = () => {
+    setActivePanel('none');
+    worldRef.current?.teleportToAirport();
+    soundEngine.playInteract();
+    showToast('Welcome to Kerala International Airport (COK)! Walk to any Aeroplane & press E to fly!');
+  };
+
+  const handleTriggerAutoLand = () => {
+    const active = worldRef.current?.triggerAutoLand() ?? false;
+    showToast(
+      active
+        ? 'Auto-Land engaged — gliding smoothly onto Kerala Airport Runway 09!'
+        : 'Auto-Land cancelled — Manual easy flight control!',
+    );
   };
 
   const handleSelectAutopilot = (dest: AutoDestination | null) => {
@@ -774,6 +798,8 @@ export default function App() {
           onOpenBank={() => setActivePanel('bank')}
           onOpenInventory={() => setActivePanel('inventory')}
           onOpenGarage={() => setActivePanel('garage')}
+          onGoToAirport={handleGoToAirport}
+          onTriggerAutoLand={handleTriggerAutoLand}
           onOpenWardrobe={() => setActivePanel('wardrobe')}
           onCallEmergency108={handleManualCall108}
           onSelectAutopilot={handleSelectAutopilot}
@@ -826,12 +852,13 @@ export default function App() {
         />
       )}
 
-      {/* 28-VEHICLE GARAGE & SHOWROOM */}
+      {/* VEHICLE GARAGE & AIRPORT HANGAR */}
       {screen === 'playing' && activePanel === 'garage' && (
         <GarageModal
           progress={progress}
           onBuyVehicle={handleBuyVehicle}
           onSpawnAndDrive={handleSpawnAndDrive}
+          onGoToAirport={handleGoToAirport}
           onClose={() => setActivePanel('none')}
         />
       )}

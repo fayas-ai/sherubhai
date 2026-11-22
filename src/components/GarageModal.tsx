@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Car, Check, Gauge, MapPin, Siren, X } from 'lucide-react';
+import { Car, Check, Gauge, MapPin, Plane, Siren, X } from 'lucide-react';
 import { GameProgressState, VehicleCategory, VehicleDef } from '../types/game';
 import { VEHICLE_CATALOG } from '../data/vehiclesData';
 import { CURRENCY_SYMBOL } from '../data/worldData';
@@ -9,11 +9,13 @@ interface GarageModalProps {
   progress: GameProgressState;
   onBuyVehicle: (veh: VehicleDef) => void;
   onSpawnAndDrive: (veh: VehicleDef) => void;
+  onGoToAirport: () => void;
   onClose: () => void;
 }
 
 const CATEGORY_TABS: { id: 'all' | VehicleCategory; label: string }[] = [
-  { id: 'all', label: 'All 28 Vehicles' },
+  { id: 'all', label: `All ${VEHICLE_CATALOG.length} Vehicles` },
+  { id: 'aircraft', label: 'Aeroplanes (3)' },
   { id: 'luxury', label: 'Luxury & Sports' },
   { id: 'daily', label: 'Cars, Jeep & Taxi' },
   { id: 'twowheeler', label: 'Auto & Bikes' },
@@ -26,6 +28,7 @@ export const GarageModal: React.FC<GarageModalProps> = ({
   progress,
   onBuyVehicle,
   onSpawnAndDrive,
+  onGoToAirport,
   onClose,
 }) => {
   const [tab, setTab] = useState<'all' | VehicleCategory>('all');
@@ -46,21 +49,32 @@ export const GarageModal: React.FC<GarageModalProps> = ({
             </div>
             <div>
               <h2 className="font-display font-extrabold text-lg sm:text-xl text-[#ffd166]">
-                SHERU BHAI 28-VEHICLE GARAGE & SHOWROOM
+                SHERU BHAI GARAGE &amp; AIRPORT HANGAR
               </h2>
               <p className="text-xs text-[#c7d6cc]">
-                Owned: {progress.ownedVehicleIds.length}/{VEHICLE_CATALOG.length} · Compact Low-Poly 3D Fleet · Max 180 km/h
+                {VEHICLE_CATALOG.length} Fleet Vehicles &amp; Flyable Aeroplanes · Easy Arcade Driving &amp; Runway Takeoff
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close Vehicle Garage"
-            className="p-2 rounded-lg bg-[#21382d] hover:bg-[#2d4d3e] text-[#ffd166] cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="garage-goto-airport"
+              onClick={onGoToAirport}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#0284c7] hover:bg-[#0369a1] text-white text-xs font-extrabold cursor-pointer"
+            >
+              <Plane className="w-4 h-4" />
+              Go to Airport &amp; Runway
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close Vehicle Garage"
+              className="p-2 rounded-lg bg-[#21382d] hover:bg-[#2d4d3e] text-[#ffd166] cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Category Filter Tabs */}
@@ -149,9 +163,13 @@ export const GarageModal: React.FC<GarageModalProps> = ({
                       type="button"
                       data-testid={`drive-${v.id}`}
                       onClick={() => onSpawnAndDrive(v)}
-                      className="w-full py-2 rounded-lg bg-[#f5c542] hover:bg-[#ffd566] text-[#141a17] font-display font-extrabold text-xs cursor-pointer"
+                      className={`w-full py-2 rounded-lg font-display font-extrabold text-xs cursor-pointer ${
+                        v.isAircraft
+                          ? 'bg-[#38bdf8] hover:bg-[#7dd3fc] text-[#0c1d2b]'
+                          : 'bg-[#f5c542] hover:bg-[#ffd566] text-[#141a17]'
+                      }`}
                     >
-                      SUMMON & DRIVE NOW
+                      {v.isAircraft ? 'FLY ON RUNWAY NOW' : 'SUMMON & DRIVE NOW'}
                     </button>
                   ) : (
                     <button

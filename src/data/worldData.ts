@@ -12,7 +12,7 @@ export const CURRENCY_SHORT = 'GHOP';
 export const CURRENCY_SYMBOL = '𖠋';
 export const BANK_NAME = 'GHOP GHOP INTERNATIONAL BANK';
 
-export const WORLD_RADIUS = 165;
+export const WORLD_RADIUS = 200;
 
 // Player spawns at the central Kerala town junction facing North (-Z) toward GHOP Bank & Tea Shop
 export const PLAYER_SPAWN = {
@@ -715,8 +715,8 @@ export const BUILDINGS: BuildingDef[] = [
     mlSign: 'കേരള ആയുർവേദ സ്പാ',
     category: 'resort',
     district: 'North InfoPark Strip',
-    x: 0,
-    z: -92,
+    x: 78,
+    z: -88,
     width: 14,
     depth: 10,
     height: 7.4,
@@ -848,6 +848,45 @@ export const BUILDINGS: BuildingDef[] = [
     purchasePrice: 58000000,
     ownerNpcId: 'npc_bakery_owner',
     products: [],
+  },
+  {
+    id: 'airport_terminal',
+    name: 'Kerala International Airport',
+    mlSign: 'കേരള ഇന്റർനാഷണൽ എയർപോർട്ട് (COK)',
+    category: 'airport',
+    district: 'Kerala International Airport',
+    x: 0,
+    z: -112,
+    width: 32,
+    depth: 12,
+    height: 10.5,
+    rotationY: Math.PI,
+    wallColor: 0xf8fafc,
+    roofColor: 0x0f766e,
+    accentColor: 0xf5c542,
+    buyable: true,
+    purchasePrice: 150000000,
+    ownerNpcId: 'npc_resort_host',
+    products: [
+      {
+        id: 'item_vip_boarding_pass',
+        name: 'GHOP Airways VIP Pilot Pass',
+        mlName: 'വിഐപി പൈലറ്റ് പാസ്',
+        priceGhop: 25000,
+        description: 'Lifetime Captain clearance for Runway 09/27 & VIP lounge chai.',
+        category: 'item',
+        funnyEffect: 'ATC Tower clears Sheru Bhai for instant takeoff!',
+      },
+      {
+        id: 'item_duty_free_chips',
+        name: 'Duty-Free Gold Banana Chips',
+        mlName: 'ഡ്യൂട്ടി ഫ്രീ ബനാന ചിപ്സ്',
+        priceGhop: 15000,
+        description: 'Tax-free crunchy Kerala chips packed in a 24K gold tin.',
+        category: 'item',
+        funnyEffect: 'Airport passengers applaud Sheru’s billionaire snack flex!',
+      },
+    ],
   },
 ];
 
@@ -1012,6 +1051,7 @@ export const PARKING_BAYS: ParkingBayDef[] = [
   { id: 'park_bank', name: 'GHOP Bank VIP Parking', x: -13, z: -34, rotationY: 0 },
   { id: 'park_hospital', name: '108 Hospital Emergency Bay', x: 54, z: -36, rotationY: -Math.PI / 2 },
   { id: 'park_resort', name: 'Lagoon Resort Valet Parking', x: 46, z: 40, rotationY: Math.PI },
+  { id: 'park_airport_apron', name: 'Kerala Airport Gate Apron', x: 0, z: -127, rotationY: Math.PI / 2 },
 ];
 
 export const RESORT_POOL_BOUNDS = {
@@ -1638,6 +1678,54 @@ export const VEHICLES: VehicleDef[] = [
     drivable: true,
     hasSiren: true,
   },
+  {
+    id: 'veh_sheru_jet',
+    name: 'Sheru Air VIP Private Jet',
+    mlName: 'ഷേരു പ്രൈവറ്റ് ജെറ്റ്',
+    type: 'airplane_jet',
+    category: 'aircraft',
+    color: 0xf8fafc,
+    accentColor: 0xf5c542,
+    x: -72,
+    z: -146,
+    rotationY: Math.PI / 2,
+    maxSpeed: 45,
+    maxKmh: 180,
+    drivable: true,
+    isAircraft: true,
+  },
+  {
+    id: 'veh_kerala_airliner',
+    name: 'Kerala Airways 737 Jet',
+    mlName: 'കേരള എയർവേയ്‌സ് വിമാനം',
+    type: 'airplane_airliner',
+    category: 'aircraft',
+    color: 0xffffff,
+    accentColor: 0x15803d,
+    x: -16,
+    z: -127,
+    rotationY: Math.PI / 2,
+    maxSpeed: 43,
+    maxKmh: 172,
+    drivable: true,
+    isAircraft: true,
+  },
+  {
+    id: 'veh_coconut_prop',
+    name: 'Malabar Sky Prop Plane',
+    mlName: 'മലബാർ പ്രൊപ്പല്ലർ വിമാനം',
+    type: 'airplane_prop',
+    category: 'aircraft',
+    color: 0xfacc15,
+    accentColor: 0xdc2626,
+    x: 20,
+    z: -127,
+    rotationY: Math.PI / 2,
+    maxSpeed: 38,
+    maxKmh: 152,
+    drivable: true,
+    isAircraft: true,
+  },
 ];
 
 export const WORLD_COLLECTIBLES: WorldCollectible[] = [
@@ -1724,6 +1812,7 @@ export const WORLD_COLLECTIBLES: WorldCollectible[] = [
 ];
 
 export function getDistrictAt(x: number, z: number): string {
+  if (z < -104) return 'Kerala International Airport';
   if (z > 98) return 'Marine Drive Beach';
   if (z < -68) return 'North InfoPark Strip';
   if (x < -104) return 'Far West Turf Blvd';

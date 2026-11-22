@@ -12,11 +12,14 @@ import {
 import { AdBoardDef, AutoStandDef, BusStopDef, ParkingBayDef } from '../data/worldData';
 import {
   createAdBoard300x250Texture,
+  createApronTexture,
   createContactShadowTexture,
   createRoofTileTexture,
+  createRunwayTexture,
   createSignboardTexture,
   createWallBanner320x50Texture,
 } from './textures';
+import { AIRPORT_RUNWAY } from './vehiclePhysics';
 
 let sharedShadowTex: THREE.CanvasTexture | null = null;
 function getShadowTexture(): THREE.CanvasTexture {
@@ -2409,4 +2412,279 @@ export function createAdBoard300x250Model(
 
   return g;
 }
+
+export interface AirportComplexRig {
+  group: THREE.Group;
+  radarDish: THREE.Object3D;
+  windsock: THREE.Object3D;
+  beaconMat: THREE.MeshStandardMaterial;
+  runwayLightMat: THREE.MeshStandardMaterial;
+}
+
+/**
+ * Builds the complete Kerala International Airport (COK) Complex:
+ * - 196m x 22m Asphalt Runway (09 / 27) with piano-key markings, aiming blocks & dashed centerline
+ * - Glowing runway edge lights, green threshold lamps & red end lights
+ * - Concrete Terminal Apron, yellow-lined taxiways & North Airport Access Road
+ * - Air Traffic Control (ATC) Tower with 360° glass deck, flashing beacon & rotating radar dish
+ * - GHOP Airways Aviation Hangar & fluttering orange-white Windsock
+ */
+export function createAirportComplexModel(maxAnisotropy: number): AirportComplexRig {
+  const group = new THREE.Group();
+
+  const rwZ = AIRPORT_RUNWAY.centerZ;
+  const rwLen = AIRPORT_RUNWAY.length;
+  const rwW = AIRPORT_RUNWAY.width;
+
+  // 1. Main East-West Asphalt Runway (196m x 22m)
+  const runwayTex = createRunwayTexture(maxAnisotropy);
+  const runwayMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(rwLen, rwW),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: runwayTex,
+      roughness: 0.82,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    }),
+  );
+  runwayMesh.rotation.x = -Math.PI / 2;
+  runwayMesh.position.set(0, 0.045, rwZ);
+  runwayMesh.receiveShadow = true;
+  group.add(runwayMesh);
+
+  // Subtle runway shoulder border strip
+  const shoulderMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(rwLen + 10, rwW + 7),
+    new THREE.MeshStandardMaterial({ color: 0x3b434d, roughness: 0.9 }),
+  );
+  shoulderMesh.rotation.x = -Math.PI / 2;
+  shoulderMesh.position.set(0, 0.028, rwZ);
+  shoulderMesh.receiveShadow = true;
+  group.add(shoulderMesh);
+
+  // 2. Concrete Airport Apron (front of Terminal + Hangar + ATC) & Twin Taxiways to Runway
+  const apronTex = createApronTexture(maxAnisotropy);
+  const apronMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(118, 26),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: apronTex,
+      roughness: 0.85,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    }),
+  );
+  apronMesh.rotation.x = -Math.PI / 2;
+  apronMesh.position.set(0, 0.036, AIRPORT_RUNWAY.apronZ);
+  apronMesh.receiveShadow = true;
+  group.add(apronMesh);
+
+  // Connecting Taxiway ramps (West & East connectors from Apron to Runway)
+  const taxiMat = new THREE.MeshStandardMaterial({ color: 0x3e4650, roughness: 0.86 });
+  const yellowLineMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.5 });
+  for (const tx of [-54, 0, 54]) {
+    const conn = new THREE.Mesh(new THREE.PlaneGeometry(12, 16), taxiMat);
+    conn.rotation.x = -Math.PI / 2;
+    conn.position.set(tx, 0.038, rwZ + rwW / 2 + 4.5);
+    conn.receiveShadow = true;
+    group.add(conn);
+
+    const yLine = new THREE.Mesh(new THREE.PlaneGeometry(0.45, 14), yellowLineMat);
+    yLine.rotation.x = -Math.PI / 2;
+    yLine.position.set(tx, 0.048, rwZ + rwW / 2 + 4.5);
+    group.add(yLine);
+  }
+
+  // North Airport Access Road linking North InfoPark Blvd (z = -72) straight to Airport Terminal (z = -108)
+  const accessRoad = new THREE.Mesh(new THREE.PlaneGeometry(12, 42), taxiMat);
+  accessRoad.rotation.x = -Math.PI / 2;
+  accessRoad.position.set(0, 0.033, -90);
+  accessRoad.receiveShadow = true;
+  group.add(accessRoad);
+
+  // 3. Runway Edge, Green Threshold & Red End Lights
+  const runwayLightMat = new THREE.MeshStandardMaterial({
+    color: 0xfffbeb,
+    emissive: 0xfde047,
+    emissiveIntensity: 1.25,
+  });
+  const greenLightMat = new THREE.MeshStandardMaterial({
+    color: 0x22c55e,
+    emissive: 0x22c55e,
+    emissiveIntensity: 1.4,
+  });
+  const redLightMat = new THREE.MeshStandardMaterial({
+    color: 0xef4444,
+    emissive: 0xef4444,
+    emissiveIntensity: 1.4,
+  });
+  const postMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.55, metalness: 0.5 });
+  const postGeo = new THREE.CylinderGeometry(0.08, 0.1, 0.65, 6);
+  const bulbGeo = new THREE.SphereGeometry(0.2, 8, 8);
+
+  for (let lx = -92; lx <= 92; lx += 18.4) {
+    for (const side of [-1, 1]) {
+      const lz = rwZ + side * (rwW / 2 + 1.3);
+      const post = new THREE.Mesh(postGeo, postMat);
+      post.position.set(lx, 0.32, lz);
+      const bulb = new THREE.Mesh(bulbGeo, runwayLightMat);
+      bulb.position.set(lx, 0.72, lz);
+      group.add(post, bulb);
+    }
+  }
+  // Threshold green (West 09) & end red (East 27) approach bar lights
+  for (let kz = -8; kz <= 8; kz += 4) {
+    const westLamp = new THREE.Mesh(bulbGeo, greenLightMat);
+    westLamp.position.set(-rwLen / 2 - 1.5, 0.55, rwZ + kz);
+    const eastLamp = new THREE.Mesh(bulbGeo, redLightMat);
+    eastLamp.position.set(rwLen / 2 + 1.5, 0.55, rwZ + kz);
+    group.add(westLamp, eastLamp);
+  }
+
+  // 4. Air Traffic Control (ATC) Tower (West of Terminal at x: -34, z: -113)
+  const atc = new THREE.Group();
+  atc.position.set(-34, 0, -113);
+  const whiteMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.45 });
+  const tealMat = new THREE.MeshStandardMaterial({ color: 0x0f766e, roughness: 0.4, metalness: 0.25 });
+  const goldMat = new THREE.MeshStandardMaterial({ color: 0xf5c542, roughness: 0.28, metalness: 0.72 });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x0ea5e9,
+    emissive: 0x0369a1,
+    emissiveIntensity: 0.35,
+    roughness: 0.12,
+    metalness: 0.75,
+  });
+
+  const atcBase = new THREE.Mesh(new THREE.BoxGeometry(7.2, 4.2, 7.2), whiteMat);
+  atcBase.position.y = 2.1;
+  atcBase.castShadow = true;
+  atc.add(atcBase);
+
+  const atcShaft = new THREE.Mesh(new THREE.CylinderGeometry(2.1, 2.8, 12.5, 8), whiteMat);
+  atcShaft.position.y = 10.2;
+  atcShaft.castShadow = true;
+  atc.add(atcShaft);
+
+  const atcRing = new THREE.Mesh(new THREE.CylinderGeometry(3.8, 2.5, 1.4, 8), tealMat);
+  atcRing.position.y = 16.8;
+  atc.add(atcRing);
+
+  const atcCabGlass = new THREE.Mesh(new THREE.CylinderGeometry(4.4, 3.8, 2.7, 8), glassMat);
+  atcCabGlass.position.y = 18.8;
+  atc.add(atcCabGlass);
+
+  const atcRoof = new THREE.Mesh(new THREE.CylinderGeometry(4.8, 4.5, 0.75, 8), goldMat);
+  atcRoof.position.y = 20.5;
+  atc.add(atcRoof);
+
+  // Rotating ATC Radar Dish on top
+  const radarDish = new THREE.Group();
+  radarDish.position.set(0, 21.8, 0);
+  const radarMast = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 1.6, 6), postMat);
+  const radarBar = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.65, 0.22), whiteMat);
+  radarBar.position.y = 0.7;
+  const radarTip = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.16, 0.26), goldMat);
+  radarTip.position.y = 1.05;
+  radarDish.add(radarMast, radarBar, radarTip);
+  atc.add(radarDish);
+
+  const beaconMat = new THREE.MeshStandardMaterial({
+    color: 0xef4444,
+    emissive: 0xff2222,
+    emissiveIntensity: 1.8,
+  });
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.32, 10, 10), beaconMat);
+  beacon.position.y = 23.6;
+  atc.add(beacon);
+
+  const atcSignTex = createSignboardTexture(
+    'ATC TOWER · COK',
+    'എയർ ട്രാഫിക് കൺട്രോൾ',
+    true,
+    0x0f766e,
+    maxAnisotropy,
+  );
+  const atcSign = new THREE.Mesh(
+    new THREE.BoxGeometry(5.6, 1.35, 0.2),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, map: atcSignTex, roughness: 0.35 }),
+  );
+  atcSign.position.set(0, 4.5, -3.7);
+  atcSign.rotation.y = Math.PI;
+  atc.add(atcSign);
+  group.add(atc);
+
+  // 5. GHOP Airways Aviation Hangar (East of Terminal at x: 38, z: -113)
+  const hangar = new THREE.Group();
+  hangar.position.set(38, 0, -113);
+  const hangarMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.55, metalness: 0.25 });
+  const hangarDarkMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.7 });
+
+  const hBack = new THREE.Mesh(new THREE.BoxGeometry(20, 8.2, 1.0), hangarMat);
+  hBack.position.set(0, 4.1, 6.5);
+  hBack.castShadow = true;
+  const hLeft = new THREE.Mesh(new THREE.BoxGeometry(1.0, 8.2, 14), hangarMat);
+  hLeft.position.set(-9.5, 4.1, 0);
+  hLeft.castShadow = true;
+  const hRight = new THREE.Mesh(new THREE.BoxGeometry(1.0, 8.2, 14), hangarMat);
+  hRight.position.set(9.5, 4.1, 0);
+  hRight.castShadow = true;
+  const hRoof = new THREE.Mesh(
+    new THREE.CylinderGeometry(10.1, 10.1, 14.4, 14, 1, false, 0, Math.PI),
+    tealMat,
+  );
+  hRoof.rotation.z = Math.PI / 2;
+  hRoof.rotation.y = Math.PI / 2;
+  hRoof.scale.set(1, 0.42, 1);
+  hRoof.position.set(0, 8.2, 0);
+  hRoof.castShadow = true;
+
+  const hInnerDark = new THREE.Mesh(new THREE.PlaneGeometry(18, 7.8), hangarDarkMat);
+  hInnerDark.position.set(0, 3.9, 5.9);
+  hInnerDark.rotation.y = Math.PI;
+
+  const hangarSignTex = createSignboardTexture(
+    'GHOP AIRWAYS HANGAR',
+    'ഷേരു എയർവേയ്‌സ് ഹാംഗർ',
+    true,
+    0xf5c542,
+    maxAnisotropy,
+  );
+  const hangarSign = new THREE.Mesh(
+    new THREE.BoxGeometry(12, 1.9, 0.24),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, map: hangarSignTex, roughness: 0.35 }),
+  );
+  hangarSign.position.set(0, 9.6, -7.1);
+  hangarSign.rotation.y = Math.PI;
+
+  hangar.add(hBack, hLeft, hRight, hRoof, hInnerDark, hangarSign);
+  group.add(hangar);
+
+  // 6. Fluttering Aviation Windsock near Runway midpoint
+  const sockPoleGroup = new THREE.Group();
+  sockPoleGroup.position.set(-48, 0, rwZ - rwW / 2 - 4.5);
+  const sockPole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.11, 5.8, 6), whiteMat);
+  sockPole.position.y = 2.9;
+  sockPoleGroup.add(sockPole);
+
+  const windsock = new THREE.Group();
+  windsock.position.set(0, 5.65, 0);
+  const orangeMat = new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.55 });
+  for (let s = 0; s < 4; s++) {
+    const seg = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.36 - s * 0.05, 0.42 - s * 0.05, 0.55, 10),
+      s % 2 === 0 ? orangeMat : whiteMat,
+    );
+    seg.rotation.z = -Math.PI / 2;
+    seg.position.set(0.35 + s * 0.52, -s * 0.06, 0);
+    windsock.add(seg);
+  }
+  sockPoleGroup.add(windsock);
+  group.add(sockPoleGroup);
+
+  return { group, radarDish, windsock, beaconMat, runwayLightMat };
+}
+
 

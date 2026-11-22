@@ -22,7 +22,8 @@ export type ShopCategory =
   | 'hospital'
   | 'police_station'
   | 'fire_station'
-  | 'resort';
+  | 'resort'
+  | 'airport';
 
 export type SheruOutfit = 'black' | 'white' | 'gold';
 
@@ -227,7 +228,10 @@ export type VehicleArchetype =
   | 'police_jeep'
   | 'fire_engine'
   | 'garbage_truck'
-  | 'tow_truck';
+  | 'tow_truck'
+  | 'airplane_jet'
+  | 'airplane_airliner'
+  | 'airplane_prop';
 
 export type VehicleCategory =
   | 'luxury'
@@ -235,7 +239,8 @@ export type VehicleCategory =
   | 'twowheeler'
   | 'commercial'
   | 'bus'
-  | 'emergency';
+  | 'emergency'
+  | 'aircraft';
 
 export interface VehicleDef {
   id: string;
@@ -251,6 +256,7 @@ export interface VehicleDef {
   maxSpeed: number; // world units/sec (45 world u/s = 180 km/h)
   maxKmh?: number; // up to 180
   drivable: boolean;
+  isAircraft?: boolean;
   priceGhop?: number;
   hasSiren?: boolean;
   description?: string;
@@ -483,6 +489,9 @@ export interface HudSnapshot {
   district: string;
   inVehicleId: string | null;
   inVehicleName: string | null;
+  inVehicleIsAircraft?: boolean;
+  altitude?: number;
+  flightState?: 'ground' | 'takeoff_ready' | 'airborne';
   inVehicleHasSiren?: boolean;
   sirenActive?: boolean;
   autopilotDestName?: string | null;
@@ -491,7 +500,7 @@ export interface HudSnapshot {
   timePhase: TimeOfDayPhase;
   timeOfDay: number;
   npcs: { id: string; x: number; z: number; isBoss?: boolean }[];
-  vehicles: { id: string; x: number; z: number; isEmergency?: boolean }[];
+  vehicles: { id: string; x: number; z: number; isEmergency?: boolean; isAircraft?: boolean }[];
   trafficLightState?: 'ns_green' | 'ew_green' | 'yellow';
 }
 

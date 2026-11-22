@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  AIRPORT_RUNWAY,
+  isAircraftType,
+  isPointOnRunway,
+  stepAirplanePhysics,
+  stepGroundVehiclePhysics,
+} from './vehiclePhysics';
+import {
   HOSPITAL_INTERIOR_BOUNDS,
   applyDialogueChoice,
   buildNpcDialogue,
@@ -207,10 +214,12 @@ test('bank transaction, collectible pickup, vehicle driving, and Level 100 coron
   assert.equal(crownRes.state.titleBadge, 'KING OF GHOP GHOP WORLD');
 });
 
-test('28 compact original vehicles catalog has unique IDs, max speed <= 180 km/h, and sirens on emergency vehicles', () => {
-  assert.equal(VEHICLE_CATALOG.length, 28);
+test('31 compact original vehicles & aeroplanes catalog has unique IDs, max speed <= 180 km/h, and sirens on emergency vehicles', () => {
+  assert.equal(VEHICLE_CATALOG.length, 31);
   const ids = new Set(VEHICLE_CATALOG.map((v) => v.id));
-  assert.equal(ids.size, 28);
+  assert.equal(ids.size, 31);
+  const aircraft = VEHICLE_CATALOG.filter((v) => v.category === 'aircraft' && v.isAircraft);
+  assert.equal(aircraft.length, 3, 'Expected 3 flyable aeroplanes in VEHICLE_CATALOG');
 
   for (const v of VEHICLE_CATALOG) {
     const kmh = v.maxKmh ?? Math.round(v.maxSpeed * 4);
@@ -478,6 +487,109 @@ test('3D CSS3D Adsterra pool maps every 300x250 board & 320x50 shop/home wall ba
   const blocked = isSurfaceOccludedByBuildings(0, 12, -16, -32, 'ghop_bank', colliders);
   assert.equal(blocked, true, 'Tea Shop at (-16,-16) should occlude ray passing through it');
 });
+
+test('Kerala International Airport, Easy Ground Driving physics, and Easy Aeroplane Flight physics work cleanly', () => {
+  // Airport landmark, runway bounds & district detection
+  const terminal = BUILDINGS.find((b) => b.id === 'airport_terminal');
+  assert.ok(terminal, 'airport_terminal landmark must exist');
+  assert.equal(getDistrictAt(0, AIRPORT_RUNWAY.centerZ), 'Kerala International Airport');
+  assert.equal(isPointOnRunway(0, AIRPORT_RUNWAY.centerZ), true);
+  assert.equal(isPointOnRunway(0, 0), false);
+  assert.equal(isAircraftType('airplane_jet'), true);
+  assert.equal(isAircraftType('lambo_sport'), false);
+
+  // Easy Ground Driving: calmer steering at 180 km/h than at city speed + crisp ABS braking
+  const lowSpeedTurn = stepGroundVehiclePhysics(
+    { speed: 10, yaw: 0, steerAngle: 0, steerInput: 1, maxSpeed: 45 },
+    { forward: 1, strafe: 1, boost: false, handbrake: false },
+    0.05,
+  );
+  const highSpeedTurn = stepGroundVehiclePhysics(
+    { speed: 45, yaw: 0, steerAngle: 0, steerInput: 1, maxSpeed: 45 },
+    { forward: 1, strafe: 1, boost: false, handbrake: false },
+    0.05,
+  );
+  assert.ok(
+    Math.abs(highSpeedTurn.yaw) < Math.abs(lowSpeedTurn.yaw),
+    'High-speed steering should be calmer and steadier than low-speed city steering',
+  );
+
+  const absBrake = stepGroundVehiclePhysics(
+    { speed: 20, yaw: 0, steerAngle: 0, steerInput: 0, maxSpeed: 45 },
+    { forward: -1, strafe: 0, boost: false, handbrake: false },
+    0.05,
+  );
+  assert.ok(absBrake.speed < 18, 'Pressing S while moving forward applies crisp ABS braking');
+
+  // Easy Airplane Flight: smooth runway takeoff, climb, auto-level wings & auto-land touchdown
+  let plane: {
+    x: number;
+    y: number;
+    z: number;
+    yaw: number;
+    pitch: number;
+    roll: number;
+    speed: number;
+    maxSpeed: number;
+    steerInput: number;
+  } = {
+    x: AIRPORT_RUNWAY.takeoffStartX,
+    y: 0,
+    z: AIRPORT_RUNWAY.takeoffStartZ,
+    yaw: AIRPORT_RUNWAY.takeoffYaw,
+    pitch: 0,
+    roll: 0,
+    speed: 0,
+    maxSpeed: 45,
+    steerInput: 0,
+  };
+  for (let i = 0; i < 40; i++) {
+    const step = stepAirplanePhysics(
+      plane,
+      { throttle: 1, turn: 0, climb: i > 22, descend: false },
+      0.05,
+    );
+    plane = step;
+  }
+  assert.ok(plane.y > 5, `Expected airplane to take off smoothly above 5m, got y=${plane.y}`);
+  assert.ok(plane.x > AIRPORT_RUNWAY.takeoffStartX + 10, 'Airplane should advance down runway');
+
+  // Auto-level wings when turning stops
+  const banked = stepAirplanePhysics(
+    plane,
+    { throttle: 0.5, turn: 1, climb: false, descend: false },
+    0.05,
+  );
+  assert.ok(Math.abs(banked.roll) > 0.01, 'Turning in air should bank wings smoothly');
+  let leveled = banked;
+  for (let i = 0; i < 30; i++) {
+    leveled = stepAirplanePhysics(
+      leveled,
+      { throttle: 0, turn: 0, climb: false, descend: false },
+      0.05,
+    );
+  }
+  assert.ok(Math.abs(leveled.roll) < 0.02, 'Wings should auto-level cleanly when turn keys released');
+
+  // Auto-Land descends smoothly to ground without crashing
+  let landing = { ...leveled, y: 12 };
+  let landed = false;
+  for (let i = 0; i < 80; i++) {
+    const step = stepAirplanePhysics(
+      landing,
+      { throttle: 0, turn: 0, climb: false, descend: false, autoLand: true },
+      0.05,
+    );
+    landing = step;
+    if (step.touchedDown || step.y === 0) {
+      landed = true;
+      break;
+    }
+  }
+  assert.equal(landed, true, 'Auto-land should smoothly touch down to y=0');
+  assert.equal(landing.roll, 0);
+});
+
 
 
 

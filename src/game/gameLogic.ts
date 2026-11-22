@@ -1823,6 +1823,7 @@ export function getShopCategoryLabel(category: ShopCategory): string {
     police_station: 'Police Station',
     fire_station: 'Fire & Rescue Station',
     resort: 'Pool & Resort',
+    airport: 'International Airport',
   };
   return map[category] ?? 'Business';
 }

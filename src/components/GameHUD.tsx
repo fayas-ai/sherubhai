@@ -11,6 +11,7 @@ import {
   Navigation,
   ParkingSquare,
   Pause,
+  Plane,
   Shirt,
   Siren,
   Sparkles,
@@ -37,6 +38,7 @@ import {
 } from '../data/worldData';
 import { AUTO_DESTINATIONS } from '../data/vehiclesData';
 import { formatGhop, getDailyStreakTier } from '../game/gameLogic';
+import { AIRPORT_RUNWAY } from '../game/vehiclePhysics';
 
 interface GameHUDProps {
   hud: HudSnapshot;
@@ -50,6 +52,8 @@ interface GameHUDProps {
   onOpenBank: () => void;
   onOpenInventory: () => void;
   onOpenGarage: () => void;
+  onGoToAirport: () => void;
+  onTriggerAutoLand: () => void;
   onOpenWardrobe: () => void;
   onCallEmergency108: () => void;
   onSelectAutopilot: (dest: AutoDestination | null) => void;
@@ -86,6 +90,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onOpenBank,
   onOpenInventory,
   onOpenGarage,
+  onGoToAirport,
+  onTriggerAutoLand,
   onOpenWardrobe,
   onCallEmergency108,
   onSelectAutopilot,
@@ -163,6 +169,22 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     ctx.fillRect(cx - 108 * scale - 2, 0, 4, h);
     ctx.fillRect(cx + 108 * scale - 2, 0, 4, h);
 
+    // Kerala International Airport Runway (09/27) & Apron strip at North end of town
+    const rwX = cx + AIRPORT_RUNWAY.centerX * scale;
+    const rwZ = cy + AIRPORT_RUNWAY.centerZ * scale;
+    const rwLenPx = AIRPORT_RUNWAY.length * scale;
+    const rwWPx = Math.max(5, AIRPORT_RUNWAY.width * scale);
+    ctx.fillStyle = '#334155';
+    ctx.fillRect(rwX - rwLenPx / 2, rwZ - rwWPx / 2, rwLenPx, rwWPx);
+    ctx.strokeStyle = '#f8fafc';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(rwX - rwLenPx / 2 + 2, rwZ);
+    ctx.lineTo(rwX + rwLenPx / 2 - 2, rwZ);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
     // Resort Turquoise Swimming Pool
     const poolX = cx + ((RESORT_POOL_BOUNDS.minX + RESORT_POOL_BOUNDS.maxX) / 2) * scale;
     const poolZ = cy + ((RESORT_POOL_BOUNDS.minZ + RESORT_POOL_BOUNDS.maxZ) / 2) * scale;
@@ -223,11 +245,19 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       ctx.stroke();
     }
 
-    // Vehicles on minimap (flashing red for 108 Ambulance / Police / Fire)
+    // Vehicles & Aeroplanes on minimap (sky-blue for Aeroplanes, red for 108 Emergency)
     for (const v of hud.vehicles) {
       const vx = cx + v.x * scale;
       const vz = cy + v.z * scale;
-      if (v.isEmergency) {
+      if (v.isAircraft) {
+        ctx.fillStyle = '#38bdf8';
+        ctx.beginPath();
+        ctx.arc(vx, vz, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else if (v.isEmergency) {
         ctx.fillStyle = '#ef4444';
         ctx.beginPath();
         ctx.arc(vx, vz, 3.2, 0, Math.PI * 2);
@@ -361,12 +391,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 </div>
               </div>
             </div>
-            <div className="mt-1 flex items-center justify-between text-[10px] sm:text-[11px] text-[#d9e5dc]">
-              <span className="flex items-center gap-1 font-semibold truncate">
+            <div className="mt-1 flex items-center justify-between gap-2 text-[10px] sm:text-[11px] text-[#d9e5dc]">
+              <span className="flex items-center gap-1 font-semibold truncate min-w-0">
                 <MapPin className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#f5c542] shrink-0" />
-                {hud.district}
+                <span className="truncate">{hud.district}</span>
               </span>
-              <span className="hidden sm:inline tabular-nums text-[#ffd166]/90">
+              <span className="hidden sm:inline shrink-0 tabular-nums text-[#ffd166]/90">
                 Empire: {ownedCount} · Spent: {formatGhop(progress.ghopSpentTotal)}
               </span>
             </div>
@@ -491,8 +521,23 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           <button
             type="button"
             tabIndex={-1}
+            data-testid="hud-goto-airport"
+            aria-label="Fast Travel to Kerala Airport and Runway"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              onGoToAirport();
+            }}
+            className="flex items-center gap-1 px-2 sm:px-2.5 py-2 rounded-lg bg-[#0c4a6e]/95 hover:bg-[#0369a1] border border-[#38bdf8] text-[#e0f2fe] text-xs font-extrabold shadow cursor-pointer"
+          >
+            <Plane className="w-4 h-4 text-[#7dd3fc]" />
+            <span className="hidden lg:inline">Airport</span>
+          </button>
+
+          <button
+            type="button"
+            tabIndex={-1}
             data-testid="hud-open-garage"
-            aria-label="Open 28-Vehicle Garage"
+            aria-label="Open Vehicle Garage and Aeroplanes"
             onClick={(e) => {
               e.currentTarget.blur();
               onOpenGarage();
@@ -683,7 +728,98 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
         {/* Bottom-Center: Contextual Interaction Prompt OR Active Vehicle 180 KM/H Driving Bar */}
         <div className="flex flex-col items-center gap-2 mb-1 max-w-full">
-          {hud.inVehicleName ? (
+          {hud.inVehicleName && hud.inVehicleIsAircraft ? (
+            <div
+              data-testid="flight-hud"
+              className="pointer-events-auto flex flex-col gap-2 px-3.5 sm:px-4 py-2.5 rounded-xl bg-[#0c1d2b]/95 border-2 border-[#38bdf8] shadow-[0_8px_28px_rgba(0,0,0,0.7)] max-w-[94vw]"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[#7dd3fc]">
+                    <span>EASY FLIGHT · W THROTTLE · A/D TURN · SPACE CLIMB · SHIFT LAND</span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold ${
+                        hud.flightState === 'airborne'
+                          ? 'bg-[#0284c7] text-white'
+                          : hud.flightState === 'takeoff_ready'
+                            ? 'bg-[#16a34a] text-white'
+                            : 'bg-[#f5c542] text-[#141a17]'
+                      }`}
+                    >
+                      {hud.flightState === 'airborne'
+                        ? 'AIRBORNE'
+                        : hud.flightState === 'takeoff_ready'
+                          ? 'TAKEOFF READY · PRESS SPACE'
+                          : 'RUNWAY TAXI'}
+                    </span>
+                  </div>
+                  <div className="font-display font-extrabold text-sm sm:text-base text-[#fff8e7] flex items-center gap-1.5">
+                    <Plane className="w-4 h-4 text-[#38bdf8]" />
+                    {hud.inVehicleName}
+                  </div>
+                </div>
+
+                {/* Live Airspeed & Altitude Gauges */}
+                <div className="flex items-center gap-3">
+                  <div className="text-right border-r border-[#38bdf8]/30 pr-3">
+                    <div className="text-[9px] font-bold uppercase tracking-wider text-[#7dd3fc]">
+                      ALTITUDE
+                    </div>
+                    <div
+                      data-testid="flight-altitude"
+                      className="font-display font-extrabold text-xl sm:text-2xl text-[#fde047] tabular-nums leading-none"
+                    >
+                      {hud.altitude ?? 0}{' '}
+                      <span className="text-[11px] font-bold text-[#d9e5dc]">M</span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div
+                      data-testid="speedometer-kmh"
+                      className="font-display font-extrabold text-xl sm:text-2xl text-[#9ae6b4] tabular-nums leading-none"
+                    >
+                      {speedKmh}{' '}
+                      <span className="text-[11px] font-bold text-[#d9e5dc]">KM/H</span>
+                    </div>
+                    <div className="w-24 h-1.5 rounded bg-[#163247] overflow-hidden mt-1">
+                      <div
+                        className="h-full bg-[#38bdf8] transition-all duration-100"
+                        style={{ width: `${speedPct}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-[#38bdf8]/30">
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="auto-land-btn"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    onTriggerAutoLand();
+                  }}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0284c7] hover:bg-[#0369a1] text-white font-extrabold text-xs cursor-pointer"
+                >
+                  <Plane className="w-3.5 h-3.5" />
+                  {hud.autopilotDestName ? 'CANCEL AUTO-LAND' : 'AUTO-LAND ON RUNWAY'}
+                </button>
+
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    onInteractClick();
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-[#f5c542] hover:bg-[#ffd566] text-[#151a17] font-extrabold text-xs cursor-pointer"
+                >
+                  EXIT PLANE [E]
+                </button>
+              </div>
+            </div>
+          ) : hud.inVehicleName ? (
             <div
               data-testid="driving-hud"
               className="pointer-events-auto flex flex-col gap-2 px-3.5 sm:px-4 py-2.5 rounded-xl bg-[#111d17]/95 border-2 border-[#f5c542] shadow-[0_8px_28px_rgba(0,0,0,0.65)] max-w-[94vw]"
@@ -691,7 +827,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[#ffd166]">
-                    <span>DRIVING · WASD · SPACE BRAKE · H HORN</span>
+                    <span>EASY DRIVE · WASD · SPACE BRAKE · H HORN</span>
                     {hud.autopilotDestName && (
                       <span className="px-1.5 py-0.5 rounded bg-[#0e7490] text-white">
                         AUTO → {hud.autopilotDestName}

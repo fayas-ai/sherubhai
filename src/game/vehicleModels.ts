@@ -4,8 +4,10 @@ import { createContactShadow } from './models';
 
 export interface VehicleModelRig {
   root: THREE.Group;
+  bodyPivot?: THREE.Group;
   wheels: THREE.Object3D[];
   frontWheelPivots: THREE.Object3D[];
+  propellers?: THREE.Object3D[];
   sirenRedMat?: THREE.MeshStandardMaterial;
   sirenBlueMat?: THREE.MeshStandardMaterial;
   hasSiren: boolean;
@@ -140,6 +142,253 @@ export function createDetailedVehicleModel(def: VehicleDef): VehicleModelRig {
   };
 
   const t = def.type;
+
+  // =========================================================================
+  // 0. FLYABLE 3D KERALA AEROPLANES (Private Jet, Kerala Airways 737, Prop Plane)
+  // =========================================================================
+  if (t === 'airplane_jet' || t === 'airplane_airliner' || t === 'airplane_prop') {
+    const bodyPivot = new THREE.Group();
+    root.add(bodyPivot);
+    const propellers: THREE.Object3D[] = [];
+
+    const isAirliner = t === 'airplane_airliner';
+    const isProp = t === 'airplane_prop';
+    const fuseLen = isAirliner ? 10.6 : isProp ? 6.4 : 8.6;
+    const fuseRadius = isAirliner ? 0.92 : isProp ? 0.56 : 0.68;
+    const wingSpan = isAirliner ? 11.4 : isProp ? 7.8 : 8.8;
+    const fuseY = isAirliner ? 1.65 : isProp ? 1.15 : 1.35;
+
+    root.add(createContactShadow(isAirliner ? 4.8 : 3.4));
+
+    const navRedMat = new THREE.MeshStandardMaterial({
+      color: 0xef4444,
+      emissive: 0xef4444,
+      emissiveIntensity: 1.4,
+    });
+    const navGreenMat = new THREE.MeshStandardMaterial({
+      color: 0x22c55e,
+      emissive: 0x22c55e,
+      emissiveIntensity: 1.4,
+    });
+    const wingMat = new THREE.MeshStandardMaterial({
+      color: isProp ? def.color : 0xe2e8f0,
+      roughness: 0.28,
+      metalness: 0.42,
+    });
+    const engineGlowMat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x38bdf8,
+      emissiveIntensity: 0.9,
+    });
+
+    // Main cylindrical fuselage (aligned along +Z forward)
+    const fuselage = new THREE.Mesh(
+      new THREE.CylinderGeometry(fuseRadius * 0.92, fuseRadius, fuseLen, 14),
+      paintMat,
+    );
+    fuselage.rotation.x = Math.PI / 2;
+    fuselage.position.set(0, fuseY, 0);
+    fuselage.castShadow = true;
+    bodyPivot.add(fuselage);
+
+    // Aerodynamic Nose Cone (+Z)
+    const nose = new THREE.Mesh(
+      new THREE.ConeGeometry(fuseRadius * 0.92, isAirliner ? 2.1 : 1.75, 14),
+      isProp ? accentMat : paintMat,
+    );
+    nose.rotation.x = Math.PI / 2;
+    nose.position.set(0, fuseY - 0.04, fuseLen / 2 + (isAirliner ? 1.05 : 0.87));
+    nose.castShadow = true;
+    bodyPivot.add(nose);
+
+    // Tapered Rear Tail Cone (-Z)
+    const tailCone = new THREE.Mesh(
+      new THREE.ConeGeometry(fuseRadius, isAirliner ? 2.6 : 2.1, 14),
+      paintMat,
+    );
+    tailCone.rotation.x = -Math.PI / 2;
+    tailCone.position.set(0, fuseY + 0.08, -fuseLen / 2 - (isAirliner ? 1.25 : 1.0));
+    bodyPivot.add(tailCone);
+
+    // Signature Kerala / Gold fuselage accent stripe
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(fuseRadius * 2.04, isAirliner ? 0.26 : 0.18, fuseLen * 0.88),
+      accentMat,
+    );
+    stripe.position.set(0, fuseY - 0.06, 0.1);
+    bodyPivot.add(stripe);
+
+    // Panoramic Cockpit Windshield
+    const cockpit = new THREE.Mesh(
+      new THREE.BoxGeometry(fuseRadius * 1.48, fuseRadius * 0.65, 1.25),
+      glassMat,
+    );
+    cockpit.position.set(0, fuseY + fuseRadius * 0.42, fuseLen / 2 - (isProp ? 1.15 : 0.65));
+    cockpit.rotation.x = -0.22;
+    bodyPivot.add(cockpit);
+
+    // Passenger Cabin Windows for Jet & Airliner
+    if (!isProp) {
+      const winCount = isAirliner ? 7 : 5;
+      for (let i = 0; i < winCount; i++) {
+        const wz = fuseLen * 0.28 - i * (isAirliner ? 1.05 : 0.95);
+        for (const side of [-1, 1]) {
+          const win = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.24, 0.38), glassMat);
+          win.position.set(side * (fuseRadius - 0.01), fuseY + 0.22, wz);
+          bodyPivot.add(win);
+        }
+      }
+    }
+
+    // Swept / High Main Wings + Upturned Winglets + Navigation Lights
+    const wingY = isProp ? fuseY + fuseRadius * 0.72 : fuseY - 0.18;
+    const wingChord = isAirliner ? 2.2 : isProp ? 1.35 : 1.75;
+    for (const side of [-1, 1]) {
+      const halfSpan = wingSpan / 2;
+      const wing = new THREE.Mesh(
+        new THREE.BoxGeometry(halfSpan, 0.18, wingChord),
+        wingMat,
+      );
+      wing.position.set(side * (halfSpan / 2 + 0.25), wingY, isProp ? 0.3 : -0.15);
+      wing.rotation.y = isProp ? 0 : side * -0.22;
+      wing.castShadow = true;
+      bodyPivot.add(wing);
+
+      // Upturned Gold/Accent Winglet
+      const winglet = new THREE.Mesh(
+        new THREE.BoxGeometry(0.14, 0.72, 0.75),
+        accentMat,
+      );
+      winglet.position.set(
+        side * (halfSpan + 0.22),
+        wingY + 0.34,
+        isProp ? 0.25 : -0.65,
+      );
+      winglet.rotation.z = side * -0.24;
+      bodyPivot.add(winglet);
+
+      // Wingtip Red (Port/Left) & Green (Starboard/Right) Aviation Nav Lights
+      const navLight = new THREE.Mesh(
+        new THREE.SphereGeometry(0.16, 8, 8),
+        side < 0 ? navRedMat : navGreenMat,
+      );
+      navLight.position.set(
+        side * (halfSpan + 0.28),
+        wingY + 0.08,
+        isProp ? 0.3 : -0.55,
+      );
+      bodyPivot.add(navLight);
+
+      // Prop plane wing struts
+      if (isProp) {
+        const strut = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.35, 0.1), darkMat);
+        strut.position.set(side * 1.45, fuseY + 0.15, 0.3);
+        strut.rotation.z = side * -0.58;
+        bodyPivot.add(strut);
+      }
+    }
+
+    // Tall Vertical Tail Fin & Horizontal Stabilizers
+    const tailZ = -fuseLen / 2 - 0.85;
+    const vFinH = isAirliner ? 2.75 : isProp ? 1.45 : 2.1;
+    const vFin = new THREE.Mesh(
+      new THREE.BoxGeometry(0.2, vFinH, isAirliner ? 2.1 : 1.55),
+      accentMat,
+    );
+    vFin.position.set(0, fuseY + vFinH / 2 + 0.18, tailZ);
+    vFin.rotation.x = -0.22;
+    vFin.castShadow = true;
+    bodyPivot.add(vFin);
+
+    const hStab = new THREE.Mesh(
+      new THREE.BoxGeometry(isAirliner ? 4.4 : 3.2, 0.14, 1.05),
+      wingMat,
+    );
+    hStab.position.set(0, isAirliner || isProp ? fuseY + 0.32 : fuseY + vFinH + 0.05, tailZ - 0.15);
+    bodyPivot.add(hStab);
+
+    // Engines (Spinning Nose Propeller OR Twin Turbofan Jet Pods!)
+    if (isProp) {
+      const propHub = new THREE.Group();
+      propHub.position.set(0, fuseY - 0.04, fuseLen / 2 + 1.78);
+      const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.42, 10), chromeMat);
+      spinner.rotation.x = Math.PI / 2;
+      propHub.add(spinner);
+      const blade1 = new THREE.Mesh(new THREE.BoxGeometry(2.15, 0.16, 0.06), darkMat);
+      const blade2 = new THREE.Mesh(new THREE.BoxGeometry(0.16, 2.15, 0.06), darkMat);
+      propHub.add(blade1, blade2);
+      bodyPivot.add(propHub);
+      propellers.push(propHub);
+    } else {
+      const engPositions: [number, number, number][] = isAirliner
+        ? [
+            [-2.45, wingY - 0.56, 0.2],
+            [2.45, wingY - 0.56, 0.2],
+          ]
+        : [
+            [-1.12, fuseY + 0.25, -fuseLen / 2 + 0.9],
+            [1.12, fuseY + 0.25, -fuseLen / 2 + 0.9],
+          ];
+      for (const [ex, ey, ez] of engPositions) {
+        const pod = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.42, 0.36, 1.85, 12),
+          chromeMat,
+        );
+        pod.rotation.x = Math.PI / 2;
+        pod.position.set(ex, ey, ez);
+        pod.castShadow = true;
+        bodyPivot.add(pod);
+
+        const exhaust = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.28, 0.24, 0.14, 10),
+          engineGlowMat,
+        );
+        exhaust.rotation.x = Math.PI / 2;
+        exhaust.position.set(ex, ey, ez - 0.94);
+        bodyPivot.add(exhaust);
+
+        const fan = new THREE.Group();
+        fan.position.set(ex, ey, ez + 0.9);
+        const fBlade = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.09, 0.04), darkMat);
+        const fBlade2 = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.62, 0.04), darkMat);
+        fan.add(fBlade, fBlade2);
+        bodyPivot.add(fan);
+        propellers.push(fan);
+      }
+    }
+
+    // Tricycle Landing Gear (struts + spinning wheels)
+    const addGear = (gx: number, gz: number, isNose: boolean) => {
+      const strut = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.06, 0.06, fuseY - 0.32, 6),
+        chromeMat,
+      );
+      strut.position.set(gx, (fuseY - 0.32) / 2 + 0.26, gz);
+      bodyPivot.add(strut);
+
+      const pivot = new THREE.Group();
+      pivot.position.set(gx, 0.32, gz);
+      bodyPivot.add(pivot);
+      const spin = new THREE.Group();
+      pivot.add(spin);
+      const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.22, 10), darkMat);
+      tire.rotation.z = Math.PI / 2;
+      spin.add(tire);
+      wheels.push(spin);
+      if (isNose) frontWheelPivots.push(pivot);
+    };
+
+    addGear(0, fuseLen * 0.36, true);
+    addGear(-1.45, -0.35, false);
+    addGear(1.45, -0.35, false);
+
+    // Nose Landing Headlight
+    const landingLamp = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 8), headlightMat);
+    landingLamp.position.set(0, 0.68, fuseLen * 0.42);
+    bodyPivot.add(landingLamp);
+
+    return { root, bodyPivot, wheels, frontWheelPivots, propellers, hasSiren: false };
+  }
 
   // =========================================================================
   // 1. BEAUTIFUL SMALL WHITE 108 AMBULANCE (with interior, medical staff, rear doors, cross, siren)
