@@ -220,14 +220,10 @@ export const DialogueModal: React.FC<DialogueModalProps> = ({
           )}
         </div>
 
-        {/* Shop Wall 320×50 Live Sponsor Banner */}
+        {/* Shop Wall 320×50 Live Adsterra Banner (ads only) */}
         {dialogue.sourceType === 'shop' && (
           <div className="px-5 pb-4 pt-2 border-t border-[#d4a12a]/30 bg-[#0e1914] flex justify-center">
-            <AdSlot
-              variant="banner_320x50"
-              caption="SHOP WALL BANNER"
-              testId="shop-banner-320x50"
-            />
+            <AdSlot variant="banner_320x50" testId="shop-banner-320x50" />
           </div>
         )}
       </div>

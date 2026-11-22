@@ -8,6 +8,9 @@ import {
   checkPalmTreeCollision,
   computePalmShakeState,
   createInitialProgress,
+  daysBetweenDateKeys,
+  getDailyStreakTier,
+  getLocalDateKey,
   getRoadEgoMessage,
   getWorldColliders,
   isInsideHospitalInterior,
@@ -24,6 +27,7 @@ import {
   resolveHospitalTreatment,
   setPlayableRole,
   setPlayerOutfit,
+  updateDailyActiveStreak,
   upgradeOwnedBusiness,
 } from './gameLogic';
 import { LEVELS } from '../data/levelsData';
@@ -329,7 +333,7 @@ test('Kerala General Hospital has hollow walk-in doorway colliders, solid perime
   assert.equal(hitWest.collided, true);
 });
 
-test('ad slot configs & isolated iframe srcDoc match exact 320x50 banner and 300x250 board scripts', () => {
+test('ad slot configs & ads-only friendly iframe HTML match exact 320x50 banner and 300x250 board scripts without label text', () => {
   assert.equal(AD_SLOTS.banner_320x50.width, 320);
   assert.equal(AD_SLOTS.banner_320x50.height, 50);
   assert.equal(AD_SLOTS.banner_320x50.key, '413a7c933ff446f282700a00aeaf2f13');
@@ -343,16 +347,18 @@ test('ad slot configs & isolated iframe srcDoc match exact 320x50 banner and 300
   assert.match(bannerHtml, /'height' : 50/);
   assert.match(bannerHtml, /'width' : 320/);
   assert.match(bannerHtml, /https:\/\/bauval\.org\/22\/413a7c933ff446f282700a00aeaf2f13/);
+  assert.doesNotMatch(bannerHtml, /HOME BANNER|SPONSOR BANNER/i);
 
   const boardHtml = buildAdSlotSrcDoc('board_300x250');
   assert.match(boardHtml, /b4371a85a2736f642613c332799aeb7b/);
   assert.match(boardHtml, /'height' : 250/);
   assert.match(boardHtml, /'width' : 300/);
   assert.match(boardHtml, /https:\/\/bauval\.org\/22\/b4371a85a2736f642613c332799aeb7b/);
+  assert.doesNotMatch(boardHtml, /HOME ADS BOARD|KERALA ADS BOARD/i);
 });
 
-test('extended Kerala town has expanded radius, 6 outer landmarks, 5 300x250 Ad Boards, and outer districts', () => {
-  assert.ok(WORLD_RADIUS >= 120, `Expected extended WORLD_RADIUS >= 120, got ${WORLD_RADIUS}`);
+test('expanded Kerala town has radius >= 160, 14 outer landmarks, 8 300x250 Ad Boards, and outer districts', () => {
+  assert.ok(WORLD_RADIUS >= 160, `Expected expanded WORLD_RADIUS >= 160, got ${WORLD_RADIUS}`);
 
   const extendedIds = [
     'malabar_cinema',
@@ -361,6 +367,14 @@ test('extended Kerala town has expanded radius, 6 outer landmarks, 5 300x250 Ad 
     'spice_hypermarket',
     'palm_apartments',
     'coastal_showroom',
+    'technopark_tower',
+    'ayurveda_spa',
+    'grand_convention',
+    'stadium_arena',
+    'gold_palace_west',
+    'harbour_fish_market',
+    'marine_drive_plaza',
+    'kovalam_lighthouse_cafe',
   ];
   const colliders = getWorldColliders();
   for (const id of extendedIds) {
@@ -374,11 +388,62 @@ test('extended Kerala town has expanded radius, 6 outer landmarks, 5 300x250 Ad 
     );
   }
 
-  assert.ok(AD_BOARDS.length >= 5, `Expected >=5 300x250 Ad Boards, got ${AD_BOARDS.length}`);
+  assert.ok(AD_BOARDS.length >= 8, `Expected >=8 300x250 Ad Boards, got ${AD_BOARDS.length}`);
   assert.equal(getDistrictAt(-90, 0), 'West Cinema Strip');
   assert.equal(getDistrictAt(90, 0), 'East Promenade');
   assert.equal(getDistrictAt(0, 82), 'South Coastal Blvd');
+  assert.equal(getDistrictAt(0, -85), 'North InfoPark Strip');
+  assert.equal(getDistrictAt(-120, 0), 'Far West Turf Blvd');
+  assert.equal(getDistrictAt(120, 0), 'East Harbourfront');
+  assert.equal(getDistrictAt(0, 115), 'Marine Drive Beach');
 });
+
+test('Daily Active Player streak increments on consecutive days, stays idempotent same-day, and resets after missed days while preserving best streak', () => {
+  assert.equal(daysBetweenDateKeys('2026-11-20', '2026-11-21'), 1);
+  assert.equal(daysBetweenDateKeys('2026-11-20', '2026-11-23'), 3);
+
+  const day1 = new Date(2026, 10, 20, 10, 0, 0);
+  const day2 = new Date(2026, 10, 21, 14, 0, 0);
+  const day3 = new Date(2026, 10, 22, 9, 0, 0);
+  const day6 = new Date(2026, 10, 25, 11, 0, 0);
+
+  let state = {
+    ...createInitialProgress(),
+    dailyStreak: 1,
+    bestDailyStreak: 1,
+    lastActiveDate: getLocalDateKey(day1),
+    totalActiveDays: 1,
+  };
+
+  // Same-day visit does not double-increment
+  const sameDay = updateDailyActiveStreak(state, day1);
+  assert.equal(sameDay.status, 'same_day');
+  assert.equal(sameDay.state.dailyStreak, 1);
+  assert.equal(sameDay.bonusFame, 0);
+
+  // Consecutive day 2 increments streak & awards Fame bonus
+  const inc2 = updateDailyActiveStreak(sameDay.state, day2);
+  assert.equal(inc2.status, 'incremented');
+  assert.equal(inc2.state.dailyStreak, 2);
+  assert.equal(inc2.state.bestDailyStreak, 2);
+  assert.equal(inc2.state.totalActiveDays, 2);
+  assert.equal(inc2.bonusFame, 50);
+
+  // Consecutive day 3 hits STREAK PRO tier
+  const inc3 = updateDailyActiveStreak(inc2.state, day3);
+  assert.equal(inc3.state.dailyStreak, 3);
+  assert.equal(getDailyStreakTier(inc3.state.dailyStreak).label, 'STREAK PRO');
+  assert.equal(getDailyStreakTier(7).label, 'TOWN LEGEND');
+  assert.equal(getDailyStreakTier(14).label, 'GHOP ROYAL');
+
+  // Missed days reset streak to 1 while keeping bestDailyStreak = 3
+  const missed = updateDailyActiveStreak(inc3.state, day6);
+  assert.equal(missed.status, 'reset');
+  assert.equal(missed.state.dailyStreak, 1);
+  assert.equal(missed.state.bestDailyStreak, 3);
+  assert.equal(missed.state.totalActiveDays, 4);
+});
+
 
 
 

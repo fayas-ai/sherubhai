@@ -490,7 +490,7 @@ export class ThreeWorld {
 
     // Distant coastal backwater ocean ring beyond the extended town perimeter
     const water = new THREE.Mesh(
-      new THREE.RingGeometry(WORLD_RADIUS + 34, 290, 48),
+      new THREE.RingGeometry(WORLD_RADIUS + 34, 360, 48),
       new THREE.MeshStandardMaterial({
         color: 0x2176ae,
         roughness: 0.22,
@@ -503,7 +503,7 @@ export class ThreeWorld {
 
     // Extended Crossroads Roads (offset y = 0.025 to prevent any Z-fighting!)
     const roadTexNS = createRoadTexture(this.maxAnisotropy);
-    roadTexNS.repeat.set(1, 20);
+    roadTexNS.repeat.set(1, 26);
     const roadMatNS = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: roadTexNS,
@@ -512,14 +512,14 @@ export class ThreeWorld {
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    const mainRoadNS = new THREE.Mesh(new THREE.PlaneGeometry(11, 232), roadMatNS);
+    const mainRoadNS = new THREE.Mesh(new THREE.PlaneGeometry(11, 305), roadMatNS);
     mainRoadNS.rotation.x = -Math.PI / 2;
-    mainRoadNS.position.set(0, 0.025, 6);
+    mainRoadNS.position.set(0, 0.025, 10);
     mainRoadNS.receiveShadow = true;
     this.scene.add(mainRoadNS);
 
     const roadTexEW = createRoadTexture(this.maxAnisotropy);
-    roadTexEW.repeat.set(1, 20);
+    roadTexEW.repeat.set(1, 26);
     const roadMatEW = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: roadTexEW,
@@ -528,7 +528,7 @@ export class ThreeWorld {
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    const mainRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(11, 232), roadMatEW);
+    const mainRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(11, 305), roadMatEW);
     mainRoadEW.rotation.x = -Math.PI / 2;
     mainRoadEW.rotation.z = Math.PI / 2;
     mainRoadEW.position.set(0, 0.032, -4);
@@ -536,7 +536,7 @@ export class ThreeWorld {
     this.scene.add(mainRoadEW);
 
     // Secondary North Market/Hospital Avenue
-    const northRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 196), roadMatEW);
+    const northRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 224), roadMatEW);
     northRoadEW.rotation.x = -Math.PI / 2;
     northRoadEW.rotation.z = Math.PI / 2;
     northRoadEW.position.set(0, 0.03, -32);
@@ -544,24 +544,51 @@ export class ThreeWorld {
     this.scene.add(northRoadEW);
 
     // Extended Town Ring Roads: West Cinema Strip, East Promenade, & South Coastal Blvd
-    const westRingNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 155), roadMatNS);
+    const westRingNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 185), roadMatNS);
     westRingNS.rotation.x = -Math.PI / 2;
     westRingNS.position.set(-76, 0.027, 4);
     westRingNS.receiveShadow = true;
     this.scene.add(westRingNS);
 
-    const eastRingNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 155), roadMatNS);
+    const eastRingNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 185), roadMatNS);
     eastRingNS.rotation.x = -Math.PI / 2;
     eastRingNS.position.set(76, 0.027, 4);
     eastRingNS.receiveShadow = true;
     this.scene.add(eastRingNS);
 
-    const southCoastalEW = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 180), roadMatEW);
+    const southCoastalEW = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 226), roadMatEW);
     southCoastalEW.rotation.x = -Math.PI / 2;
     southCoastalEW.rotation.z = Math.PI / 2;
     southCoastalEW.position.set(0, 0.028, 72);
     southCoastalEW.receiveShadow = true;
     this.scene.add(southCoastalEW);
+
+    // Grand Expansion II Outer Boulevards: North InfoPark, Far West Turf, Far East Harbour, Marine Drive
+    const northHighwayEW = new THREE.Mesh(new THREE.PlaneGeometry(10, 236), roadMatEW);
+    northHighwayEW.rotation.x = -Math.PI / 2;
+    northHighwayEW.rotation.z = Math.PI / 2;
+    northHighwayEW.position.set(0, 0.029, -72);
+    northHighwayEW.receiveShadow = true;
+    this.scene.add(northHighwayEW);
+
+    const farWestNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 196), roadMatNS);
+    farWestNS.rotation.x = -Math.PI / 2;
+    farWestNS.position.set(-108, 0.026, 6);
+    farWestNS.receiveShadow = true;
+    this.scene.add(farWestNS);
+
+    const farEastNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 196), roadMatNS);
+    farEastNS.rotation.x = -Math.PI / 2;
+    farEastNS.position.set(108, 0.026, 6);
+    farEastNS.receiveShadow = true;
+    this.scene.add(farEastNS);
+
+    const marineDriveEW = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 226), roadMatEW);
+    marineDriveEW.rotation.x = -Math.PI / 2;
+    marineDriveEW.rotation.z = Math.PI / 2;
+    marineDriveEW.position.set(0, 0.027, 104);
+    marineDriveEW.receiveShadow = true;
+    this.scene.add(marineDriveEW);
 
     // Central Town Junction Plaza Circle
     const plaza = new THREE.Mesh(
@@ -723,6 +750,14 @@ export class ThreeWorld {
       [68, 28, 9.8],
       [-54, 66, 10.4],
       [54, 66, 10.0],
+      [-28, -66, 10.2],
+      [28, -66, 10.5],
+      [-100, -40, 10.4],
+      [100, -40, 9.9],
+      [-100, 42, 10.2],
+      [100, 42, 10.0],
+      [-32, 98, 10.6],
+      [32, 98, 10.4],
     ];
     innerPalms.forEach(([px, pz, ph], idx) => {
       const rig = createCoconutPalmRig(ph, 1.1);
@@ -765,8 +800,8 @@ export class ThreeWorld {
 
     // Natural perimeter palm & hill ring around extended WORLD_RADIUS (never a bare box wall!)
     const hillMat = new THREE.MeshStandardMaterial({ color: 0x3b7a3e, roughness: 0.92 });
-    for (let i = 0; i < 42; i++) {
-      const angle = (i / 42) * Math.PI * 2;
+    for (let i = 0; i < 56; i++) {
+      const angle = (i / 56) * Math.PI * 2;
       const r = WORLD_RADIUS + 4 + (i % 3) * 4;
       const hx = Math.cos(angle) * r;
       const hz = Math.sin(angle) * r;
@@ -776,9 +811,9 @@ export class ThreeWorld {
       this.scene.add(palm);
 
       if (i % 2 === 0) {
-        const mound = new THREE.Mesh(new THREE.SphereGeometry(12, 10, 8), hillMat);
+        const mound = new THREE.Mesh(new THREE.SphereGeometry(14, 10, 8), hillMat);
         mound.scale.set(1.4, 0.55, 1.4);
-        mound.position.set(Math.cos(angle) * (WORLD_RADIUS + 20), -1.5, Math.sin(angle) * (WORLD_RADIUS + 20));
+        mound.position.set(Math.cos(angle) * (WORLD_RADIUS + 22), -1.5, Math.sin(angle) * (WORLD_RADIUS + 22));
         this.scene.add(mound);
       }
     }

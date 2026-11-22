@@ -134,13 +134,9 @@ export const HomeWardrobeModal: React.FC<HomeWardrobeModalProps> = ({
         </div>
 
         <div className="p-5 space-y-4">
-          {/* Home Wall 320×50 Sponsor Banner */}
+          {/* Adsterra 320×50 Banner (ads only) */}
           <div className="flex justify-center">
-            <AdSlot
-              variant="banner_320x50"
-              caption="SHERU HOME BANNER"
-              testId="wardrobe-banner-320x50"
-            />
+            <AdSlot variant="banner_320x50" testId="wardrobe-banner-320x50" />
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_316px] gap-5 items-start">
@@ -237,13 +233,9 @@ export const HomeWardrobeModal: React.FC<HomeWardrobeModalProps> = ({
               </div>
             </div>
 
-            {/* Right Column: Home 300×250 Ads Board & Quick Trips */}
+            {/* Right Column: Adsterra 300×250 Board (ads only) & Quick Trips */}
             <div className="flex flex-col items-center gap-3.5">
-              <AdSlot
-                variant="board_300x250"
-                caption="HOME ADS BOARD"
-                testId="wardrobe-board-300x250"
-              />
+              <AdSlot variant="board_300x250" testId="wardrobe-board-300x250" />
               <div className="w-full rounded-xl bg-[#16261f] border border-[#d4a12a]/35 p-3 space-y-2">
                 <div className="text-[11px] font-extrabold uppercase tracking-wider text-[#ffd166]">
                   Quick Travel From Sheru&apos;s Home

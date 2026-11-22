@@ -466,6 +466,10 @@ export interface GameProgressState {
   visitedBuildingIds: string[];
   eventsResolvedCount: number;
   itemsBoughtCount: number;
+  dailyStreak: number;
+  bestDailyStreak: number;
+  lastActiveDate: string; // YYYY-MM-DD local calendar key
+  totalActiveDays: number;
   lastPlayerPos: { x: number; y: number; z: number; yaw: number };
   timeOfDay: number; // 0..1 (0.25 = bright day, 0.72 = sunset, 0.88 = night)
 }

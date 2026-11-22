@@ -50,6 +50,7 @@ import {
   saveSettingsToStorage,
   setPlayableRole,
   setPlayerOutfit,
+  updateDailyActiveStreak,
   upgradeOwnedBusiness,
 } from './game/gameLogic';
 import {
@@ -88,9 +89,10 @@ export default function App() {
   const savedOnBoot = useRef<GameProgressState | null>(loadProgressFromStorage());
   const [hasSave, setHasSave] = useState<boolean>(Boolean(savedOnBoot.current));
   const [settings, setSettings] = useState<GameSettings>(() => loadSettingsFromStorage());
-  const [progress, setProgress] = useState<GameProgressState>(
-    () => savedOnBoot.current ?? createInitialProgress(),
-  );
+  const [progress, setProgress] = useState<GameProgressState>(() => {
+    const initial = savedOnBoot.current ?? createInitialProgress();
+    return updateDailyActiveStreak(initial).state;
+  });
 
   const autostart =
     typeof window !== 'undefined' &&
@@ -200,7 +202,7 @@ export default function App() {
       const base: GameProgressState =
         (idbProg ? normalizeLoadedProgress(idbProg) : null) ?? progressRef.current;
 
-      const merged: GameProgressState = profile
+      const mergedBase: GameProgressState = profile
         ? {
             ...base,
             sheruOutfit: profile.outfit ?? base.sheruOutfit,
@@ -208,16 +210,25 @@ export default function App() {
           }
         : base;
 
+      const streakRes = updateDailyActiveStreak(mergedBase);
+      const merged = streakRes.state;
+
       progressRef.current = merged;
       setProgress(merged);
       setHasSave(true);
       setSavedToIndexedDb(true);
+      saveProgressToStorage(merged);
       worldRef.current?.syncProgress(merged, false);
+      if (streakRes.status === 'incremented') {
+        showToast(
+          `Daily Active Streak: Day ${merged.dailyStreak}! +${streakRes.bonusFame} Town Fame!`,
+        );
+      }
     });
     return () => {
       active = false;
     };
-  }, []);
+  }, [showToast]);
 
   // Keep body data-state in sync for accessibility & automated verification
   useEffect(() => {
@@ -462,7 +473,9 @@ export default function App() {
   }, [showToast]);
 
   const continueGame = useCallback(() => {
-    const loaded = loadProgressFromStorage() ?? progressRef.current;
+    const loadedBase = loadProgressFromStorage() ?? progressRef.current;
+    const streakRes = updateDailyActiveStreak(loadedBase);
+    const loaded = streakRes.state;
     soundEngine.unlockAndStartMusic();
     soundEngine.playInteract();
     setActiveDialogue(null);
@@ -472,11 +485,19 @@ export default function App() {
     setEmergencyIncident(null);
     progressRef.current = loaded;
     setProgress(loaded);
+    saveProgressToStorage(loaded);
+    void saveProgressToIndexedDb(loaded);
     worldRef.current?.syncProgress(loaded, true);
     worldRef.current?.setQuestTarget(getLevelById(loaded.currentLevelId).targetCoords ?? null);
     setScreen('playing');
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    showToast(`Welcome back Sheru Bhai! Level ${loaded.currentLevelId}`);
+    if (streakRes.status === 'incremented') {
+      showToast(
+        `Daily Active Streak: Day ${loaded.dailyStreak}! +${streakRes.bonusFame} Town Fame!`,
+      );
+    } else {
+      showToast(`Welcome back Sheru Bhai! Level ${loaded.currentLevelId} · Day ${loaded.dailyStreak} Streak`);
+    }
   }, [showToast]);
 
   const triggerManualRandomEvent = useCallback(() => {
@@ -893,11 +914,7 @@ export default function App() {
               </button>
             </div>
             <div className="p-5 flex flex-col items-center gap-4">
-              <AdSlot
-                variant="board_300x250"
-                caption={activeAdBoard.name}
-                testId="town-board-300x250"
-              />
+              <AdSlot variant="board_300x250" testId="town-board-300x250" />
               <button
                 type="button"
                 onClick={() => setActiveAdBoard(null)}

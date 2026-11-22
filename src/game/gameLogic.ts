@@ -128,6 +128,10 @@ export function createInitialProgress(): GameProgressState {
     visitedBuildingIds: [],
     eventsResolvedCount: 0,
     itemsBoughtCount: 0,
+    dailyStreak: 1,
+    bestDailyStreak: 1,
+    lastActiveDate: getLocalDateKey(),
+    totalActiveDays: 1,
     lastPlayerPos: { ...PLAYER_SPAWN },
     timeOfDay: 0.28, // Bright golden Kerala morning
   };
@@ -1613,6 +1617,22 @@ export function normalizeLoadedProgress(
     collectedWorldIds: Array.isArray(parsed.collectedWorldIds) ? parsed.collectedWorldIds : [],
     vehiclesDrivenIds: Array.isArray(parsed.vehiclesDrivenIds) ? parsed.vehiclesDrivenIds : [],
     visitedBuildingIds: Array.isArray(parsed.visitedBuildingIds) ? parsed.visitedBuildingIds : [],
+    dailyStreak:
+      typeof parsed.dailyStreak === 'number' && parsed.dailyStreak >= 1
+        ? Math.floor(parsed.dailyStreak)
+        : 1,
+    bestDailyStreak:
+      typeof parsed.bestDailyStreak === 'number' && parsed.bestDailyStreak >= 1
+        ? Math.max(Math.floor(parsed.bestDailyStreak), Math.floor(parsed.dailyStreak ?? 1))
+        : Math.max(1, Math.floor(parsed.dailyStreak ?? 1)),
+    lastActiveDate:
+      typeof parsed.lastActiveDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.lastActiveDate)
+        ? parsed.lastActiveDate
+        : base.lastActiveDate,
+    totalActiveDays:
+      typeof parsed.totalActiveDays === 'number' && parsed.totalActiveDays >= 1
+        ? Math.floor(parsed.totalActiveDays)
+        : 1,
     lastPlayerPos: parsed.lastPlayerPos ?? base.lastPlayerPos,
   };
 }
@@ -1897,4 +1917,118 @@ export function computePalmShakeState(
     done: false,
   };
 }
+
+// --- DAILY ACTIVE PLAYER STREAK TRACKING (PURE, TESTABLE) ---
+export function getLocalDateKey(date: Date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function daysBetweenDateKeys(prevKey: string, nextKey: string): number {
+  const parse = (key: string): number | null => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
+    if (!match) return null;
+    return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  };
+  const prevMs = parse(prevKey);
+  const nextMs = parse(nextKey);
+  if (prevMs === null || nextMs === null) return 0;
+  return Math.round((nextMs - prevMs) / 86_400_000);
+}
+
+export interface DailyStreakUpdateResult {
+  state: GameProgressState;
+  status: 'same_day' | 'incremented' | 'reset';
+  bonusFame: number;
+}
+
+export function updateDailyActiveStreak(
+  state: GameProgressState,
+  todayDate: Date = new Date(),
+): DailyStreakUpdateResult {
+  const todayKey = getLocalDateKey(todayDate);
+  const currentStreak = Math.max(1, state.dailyStreak || 1);
+  const currentBest = Math.max(currentStreak, state.bestDailyStreak || 1);
+  const currentTotal = Math.max(1, state.totalActiveDays || 1);
+
+  if (!state.lastActiveDate || !/^\d{4}-\d{2}-\d{2}$/.test(state.lastActiveDate)) {
+    return {
+      state: {
+        ...state,
+        dailyStreak: currentStreak,
+        bestDailyStreak: currentBest,
+        lastActiveDate: todayKey,
+        totalActiveDays: currentTotal,
+      },
+      status: 'same_day',
+      bonusFame: 0,
+    };
+  }
+
+  const diff = daysBetweenDateKeys(state.lastActiveDate, todayKey);
+  if (diff <= 0) {
+    return {
+      state: {
+        ...state,
+        dailyStreak: currentStreak,
+        bestDailyStreak: currentBest,
+        totalActiveDays: currentTotal,
+      },
+      status: 'same_day',
+      bonusFame: 0,
+    };
+  }
+
+  if (diff === 1) {
+    const nextStreak = currentStreak + 1;
+    const bonusFame = Math.min(250, nextStreak * 25);
+    return {
+      state: {
+        ...state,
+        dailyStreak: nextStreak,
+        bestDailyStreak: Math.max(currentBest, nextStreak),
+        lastActiveDate: todayKey,
+        totalActiveDays: currentTotal + 1,
+        reputation: state.reputation + bonusFame,
+      },
+      status: 'incremented',
+      bonusFame,
+    };
+  }
+
+  return {
+    state: {
+      ...state,
+      dailyStreak: 1,
+      bestDailyStreak: currentBest,
+      lastActiveDate: todayKey,
+      totalActiveDays: currentTotal + 1,
+    },
+    status: 'reset',
+    bonusFame: 0,
+  };
+}
+
+export interface DailyStreakTier {
+  label: string;
+  accentColor: string;
+  nextMilestone: number;
+}
+
+export function getDailyStreakTier(streak: number): DailyStreakTier {
+  const s = Math.max(1, Math.floor(streak));
+  if (s >= 14) {
+    return { label: 'GHOP ROYAL', accentColor: '#fbbf24', nextMilestone: 30 };
+  }
+  if (s >= 7) {
+    return { label: 'TOWN LEGEND', accentColor: '#f97316', nextMilestone: 14 };
+  }
+  if (s >= 3) {
+    return { label: 'STREAK PRO', accentColor: '#34d399', nextMilestone: 7 };
+  }
+  return { label: 'DAILY ACTIVE', accentColor: '#ffd166', nextMilestone: 3 };
+}
+
 

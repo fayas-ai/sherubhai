@@ -4,6 +4,7 @@ import {
   Building2,
   Car,
   Compass,
+  Flame,
   Landmark,
   MapPin,
   Moon,
@@ -35,7 +36,7 @@ import {
   WORLD_RADIUS,
 } from '../data/worldData';
 import { AUTO_DESTINATIONS } from '../data/vehiclesData';
-import { formatGhop } from '../game/gameLogic';
+import { formatGhop, getDailyStreakTier } from '../game/gameLogic';
 
 interface GameHUDProps {
   hud: HudSnapshot;
@@ -102,9 +103,15 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 }) => {
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
   const [touchRunning, setTouchRunning] = useState(false);
+  const [streakOpen, setStreakOpen] = useState(false);
   const [joyKnob, setJoyKnob] = useState({ x: 0, y: 0 });
   const joyOrigin = useRef<{ x: number; y: number; id: number } | null>(null);
   const lookLast = useRef<{ x: number; y: number; id: number } | null>(null);
+
+  const streakCount = Math.max(1, progress.dailyStreak || 1);
+  const bestStreak = Math.max(streakCount, progress.bestDailyStreak || 1);
+  const totalDays = Math.max(1, progress.totalActiveDays || 1);
+  const streakTier = getDailyStreakTier(streakCount);
 
   const isMobileViewport =
     typeof window !== 'undefined' &&
@@ -142,12 +149,19 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     ctx.fillStyle = '#1b3526';
     ctx.fillRect(0, 0, w, h);
 
-    // Roads (N-S Avenue, Main Junction E-W, North Mall Road, South Resort/Home Road)
+    // Roads (Main Cross + Outer Ring Boulevards for Extended Town)
     ctx.fillStyle = '#474f57';
-    ctx.fillRect(cx - 4, 0, 8, h);
-    ctx.fillRect(0, cy - 4 * scale - 4, w, 8);
-    ctx.fillRect(0, cy - 32 * scale - 3, w, 6);
-    ctx.fillRect(0, cy + 44 * scale - 3, w, 6);
+    ctx.fillRect(cx - 3, 0, 6, h);
+    ctx.fillRect(0, cy - 4 * scale - 3, w, 6);
+    ctx.fillRect(0, cy - 32 * scale - 2, w, 4);
+    ctx.fillRect(0, cy + 34 * scale - 2, w, 4);
+    ctx.fillRect(0, cy - 72 * scale - 2, w, 4);
+    ctx.fillRect(0, cy + 72 * scale - 2, w, 4);
+    ctx.fillRect(0, cy + 104 * scale - 2, w, 4);
+    ctx.fillRect(cx - 76 * scale - 2, 0, 4, h);
+    ctx.fillRect(cx + 76 * scale - 2, 0, 4, h);
+    ctx.fillRect(cx - 108 * scale - 2, 0, 4, h);
+    ctx.fillRect(cx + 108 * scale - 2, 0, 4, h);
 
     // Resort Turquoise Swimming Pool
     const poolX = cx + ((RESORT_POOL_BOUNDS.minX + RESORT_POOL_BOUNDS.maxX) / 2) * scale;
@@ -356,6 +370,77 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 Empire: {ownedCount} · Spent: {formatGhop(progress.ghopSpentTotal)}
               </span>
             </div>
+          </div>
+
+          {/* Special Daily Active Player Streak Badge */}
+          <div className="pointer-events-auto relative">
+            <button
+              type="button"
+              tabIndex={-1}
+              data-testid="daily-streak-badge"
+              onClick={() => setStreakOpen((v) => !v)}
+              aria-expanded={streakOpen}
+              aria-label={`Daily Active Player Streak: Day ${streakCount}`}
+              className="w-full flex items-center justify-between gap-2 rounded-xl bg-[#1a2b1f]/95 hover:bg-[#223929] border border-[#f59e0b]/80 px-2.5 sm:px-3 py-1.5 shadow-[0_4px_14px_rgba(0,0,0,0.4)] transition-colors cursor-pointer"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="w-6 h-6 rounded-lg bg-[#f59e0b]/20 border border-[#f59e0b]/60 flex items-center justify-center shrink-0">
+                  <Flame className="w-3.5 h-3.5 text-[#fbbf24] fill-[#f59e0b]" />
+                </span>
+                <div className="text-left min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-display font-extrabold text-xs sm:text-sm text-[#fff8e7] tabular-nums leading-none">
+                      DAY {streakCount} STREAK
+                    </span>
+                    <span
+                      className="px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wider text-[#141a17]"
+                      style={{ backgroundColor: streakTier.accentColor }}
+                    >
+                      {streakTier.label}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-[#9ae6b4] font-semibold truncate mt-0.5">
+                    Daily Active Player · Best {bestStreak}d
+                  </div>
+                </div>
+              </div>
+              <span className="text-[10px] font-bold text-[#ffd166] tabular-nums shrink-0">
+                {totalDays}d total
+              </span>
+            </button>
+
+            {streakOpen && (
+              <div className="mt-1.5 rounded-xl bg-[#101c16]/98 border border-[#f5c542]/80 p-3 shadow-[0_10px_28px_rgba(0,0,0,0.65)] text-xs text-[#fff8e7] space-y-1.5">
+                <div className="flex items-center justify-between font-extrabold text-[#ffd166]">
+                  <span>DAILY ACTIVE PLAYER STATUS</span>
+                  <span>{streakTier.label}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5 text-center pt-1">
+                  <div className="rounded-lg bg-[#192c22] p-1.5">
+                    <div className="text-[10px] text-[#9ae6b4]">STREAK</div>
+                    <div className="font-display font-extrabold text-sm text-[#ffd166] tabular-nums">
+                      {streakCount}d
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-[#192c22] p-1.5">
+                    <div className="text-[10px] text-[#9ae6b4]">BEST</div>
+                    <div className="font-display font-extrabold text-sm text-[#fff8e7] tabular-nums">
+                      {bestStreak}d
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-[#192c22] p-1.5">
+                    <div className="text-[10px] text-[#9ae6b4]">VISITS</div>
+                    <div className="font-display font-extrabold text-sm text-[#fff8e7] tabular-nums">
+                      {totalDays}d
+                    </div>
+                  </div>
+                </div>
+                <div className="text-[11px] text-[#c7d6cc] leading-snug pt-0.5">
+                  Visit Kerala Meme Town every day to level up your badge! Next milestone:{' '}
+                  <strong className="text-[#ffd166]">{streakTier.nextMilestone} days</strong> (+25 Fame × streak day).
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Active Level Objective Card */}
