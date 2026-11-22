@@ -9,11 +9,13 @@ import {
   VehicleDef,
   WorldCollectible,
 } from '../types/game';
-import { AutoStandDef, BusStopDef, ParkingBayDef } from '../data/worldData';
+import { AdBoardDef, AutoStandDef, BusStopDef, ParkingBayDef } from '../data/worldData';
 import {
+  createAdBoard300x250Texture,
   createContactShadowTexture,
   createRoofTileTexture,
   createSignboardTexture,
+  createWallBanner320x50Texture,
 } from './textures';
 
 let sharedShadowTex: THREE.CanvasTexture | null = null;
@@ -1638,6 +1640,70 @@ export function createBuildingModel(
   signMesh.position.set(0, signY, signZ);
   group.add(signMesh);
 
+  // 320×50 Wall Ad Banners on Shop Walls & Sheru's Royal Home (exact 6.4:1 aspect ratio)
+  const showWallBanners =
+    def.category !== 'police_station' &&
+    def.category !== 'fire_station' &&
+    def.category !== 'secret';
+  if (showWallBanners) {
+    const isHome = def.category === 'home';
+    const bannerTex = createWallBanner320x50Texture(
+      owned ? owned.customName : def.name,
+      isHome,
+      maxAnisotropy,
+    );
+    const bannerMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: bannerTex,
+      roughness: 0.35,
+      metalness: 0.12,
+    });
+    const frameMat = new THREE.MeshStandardMaterial({
+      color: 0xd4a12a,
+      roughness: 0.3,
+      metalness: 0.72,
+    });
+
+    // Side wall 320×50 banners on left & right walls of every shop and home
+    const sideBannerW = Math.min(def.depth * 0.78, 5.12);
+    const sideBannerH = sideBannerW / 6.4; // exact 320:50 ratio
+    const sideBannerY = Math.min(def.height - 1.0, 3.4);
+
+    for (const side of [-1, 1]) {
+      const sideGroup = new THREE.Group();
+      const frame = new THREE.Mesh(
+        new THREE.BoxGeometry(0.1, sideBannerH + 0.14, sideBannerW + 0.16),
+        frameMat,
+      );
+      const face = new THREE.Mesh(
+        new THREE.PlaneGeometry(sideBannerW, sideBannerH),
+        bannerMat,
+      );
+      face.rotation.y = side > 0 ? Math.PI / 2 : -Math.PI / 2;
+      face.position.x = side * 0.06;
+      sideGroup.add(frame, face);
+      sideGroup.position.set(side * (def.width / 2 + 0.07), sideBannerY, 0);
+      group.add(sideGroup);
+    }
+
+    // Sheru's Royal Home also gets a prominent front fascia 320×50 banner above the porch!
+    if (isHome) {
+      const frontW = 6.4;
+      const frontH = 1.0; // exact 320:50 ratio
+      const homeFrontFrame = new THREE.Mesh(
+        new THREE.BoxGeometry(frontW + 0.18, frontH + 0.16, 0.12),
+        frameMat,
+      );
+      homeFrontFrame.position.set(0, 6.45, def.depth / 2 + 0.2);
+      const homeFrontFace = new THREE.Mesh(
+        new THREE.PlaneGeometry(frontW, frontH),
+        bannerMat,
+      );
+      homeFrontFace.position.set(0, 6.45, def.depth / 2 + 0.27);
+      group.add(homeFrontFrame, homeFrontFace);
+    }
+  }
+
   return { group, signMesh, windowMats, def };
 }
 
@@ -2248,3 +2314,99 @@ export function createParkingBayModel(def: ParkingBayDef): THREE.Group {
 
   return g;
 }
+
+/**
+ * Compact, vibrant low-poly 300×250 (1.2:1 aspect ratio) freestanding 3D Town Ads Board.
+ * Players can walk up and press E to view the live 300×250 ad display!
+ */
+export function createAdBoard300x250Model(
+  board: AdBoardDef,
+  maxAnisotropy: number,
+): THREE.Group {
+  const g = new THREE.Group();
+  g.position.set(board.x, 0, board.z);
+  g.rotation.y = board.rotationY;
+
+  const steelMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.45,
+    metalness: 0.65,
+  });
+  const goldMat = new THREE.MeshStandardMaterial({
+    color: 0xf5c542,
+    roughness: 0.25,
+    metalness: 0.78,
+  });
+
+  // Concrete base plinth
+  const plinth = new THREE.Mesh(
+    new THREE.BoxGeometry(3.9, 0.35, 0.9),
+    new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.88 }),
+  );
+  plinth.position.y = 0.175;
+  plinth.receiveShadow = true;
+  g.add(plinth);
+
+  // Twin steel support posts
+  for (const sx of [-1.45, 1.45]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 2.2, 8), steelMat);
+    post.position.set(sx, 1.25, 0);
+    post.castShadow = true;
+    g.add(post);
+  }
+
+  // Exact 300:250 (1.2:1) billboard housing: 3.6m wide × 3.0m tall
+  const boardW = 3.6;
+  const boardH = 3.0;
+  const boardCenterY = 3.65;
+
+  const casing = new THREE.Mesh(
+    new THREE.BoxGeometry(boardW + 0.24, boardH + 0.24, 0.28),
+    steelMat,
+  );
+  casing.position.set(0, boardCenterY, 0);
+  casing.castShadow = true;
+  g.add(casing);
+
+  // Gold top & bottom accent trim bars
+  for (const sy of [-1, 1]) {
+    const trim = new THREE.Mesh(new THREE.BoxGeometry(boardW + 0.32, 0.12, 0.34), goldMat);
+    trim.position.set(0, boardCenterY + sy * (boardH / 2 + 0.14), 0);
+    g.add(trim);
+  }
+
+  // Front & back 300×250 canvas faces
+  const tex = createAdBoard300x250Texture(board.name, board.mlName, maxAnisotropy);
+  const faceMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map: tex,
+    roughness: 0.32,
+    metalness: 0.08,
+  });
+
+  const frontFace = new THREE.Mesh(new THREE.PlaneGeometry(boardW, boardH), faceMat);
+  frontFace.position.set(0, boardCenterY, 0.15);
+  g.add(frontFace);
+
+  const backFace = new THREE.Mesh(new THREE.PlaneGeometry(boardW, boardH), faceMat);
+  backFace.rotation.y = Math.PI;
+  backFace.position.set(0, boardCenterY, -0.15);
+  g.add(backFace);
+
+  // Overhead twin spotlight fixtures
+  const lampMat = new THREE.MeshStandardMaterial({
+    color: 0xfff8dc,
+    emissive: 0xffd166,
+    emissiveIntensity: 0.85,
+  });
+  for (const sx of [-1.0, 1.0]) {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.65), steelMat);
+    arm.position.set(sx, boardCenterY + boardH / 2 + 0.24, 0.32);
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.12, 0.18), lampMat);
+    lamp.position.set(sx, boardCenterY + boardH / 2 + 0.2, 0.62);
+    g.add(arm, lamp);
+  }
+
+  return g;
+}
+

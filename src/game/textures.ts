@@ -206,3 +206,137 @@ export function createContactShadowTexture(): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(canvas);
   return tex;
 }
+
+/**
+ * Exact 320:50 (6.4:1) horizontal wall banner texture mounted on shop walls & Sheru's Home.
+ */
+export function createWallBanner320x50Texture(
+  title: string,
+  isHome: boolean,
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 640;
+  canvas.height = 100;
+  const ctx = canvas.getContext('2d')!;
+
+  const grad = ctx.createLinearGradient(0, 0, 640, 100);
+  if (isHome) {
+    grad.addColorStop(0, '#12261c');
+    grad.addColorStop(0.5, '#1d4431');
+    grad.addColorStop(1, '#2b1e0a');
+  } else {
+    grad.addColorStop(0, '#10202b');
+    grad.addColorStop(0.5, '#17382b');
+    grad.addColorStop(1, '#2d1c0c');
+  }
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 640, 100);
+
+  // Gold Kerala kasavu frame
+  ctx.strokeStyle = '#f5c542';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(4, 4, 632, 92);
+
+  // Left AD badge
+  ctx.fillStyle = '#f5c542';
+  ctx.fillRect(14, 16, 118, 68);
+  ctx.fillStyle = '#141a17';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('AD BANNER', 73, 46);
+  ctx.font = 'bold 17px sans-serif';
+  ctx.fillText('320 × 50', 73, 71);
+
+  // Main headline
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#fff8e7';
+  ctx.font = 'bold 27px sans-serif';
+  ctx.fillText(
+    isHome ? 'SHERU ROYAL HOME · SPONSOR BANNER' : `${title.toUpperCase()} · SPONSORED`,
+    148,
+    46,
+    472,
+  );
+  ctx.fillStyle = '#9ae6b4';
+  ctx.font = 'bold 19px sans-serif';
+  ctx.fillText(
+    isHome
+      ? 'GHOP GHOP MEME TOWN · LIVE 320×50 HOME WALL BANNER'
+      : 'KERALA MEME TOWN OFFICIAL SHOP WALL BANNER · PRESS E',
+    148,
+    78,
+    472,
+  );
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}
+
+/**
+ * Exact 300:250 (1.2:1) freestanding 3D Town Ads Board texture.
+ */
+export function createAdBoard300x250Texture(
+  boardName: string,
+  mlName: string,
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 600;
+  canvas.height = 500;
+  const ctx = canvas.getContext('2d')!;
+
+  const grad = ctx.createLinearGradient(0, 0, 600, 500);
+  grad.addColorStop(0, '#0f241b');
+  grad.addColorStop(0.55, '#193b2c');
+  grad.addColorStop(1, '#261a08');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 600, 500);
+
+  // Decorative gold border & corner accents
+  ctx.strokeStyle = '#f5c542';
+  ctx.lineWidth = 14;
+  ctx.strokeRect(12, 12, 576, 476);
+
+  // Header strip
+  ctx.fillStyle = '#f5c542';
+  ctx.fillRect(28, 28, 544, 62);
+  ctx.fillStyle = '#141a17';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('★ KERALA ADS BOARD · 300×250 ★', 300, 70, 520);
+
+  // Center showcase box
+  ctx.fillStyle = 'rgba(10, 18, 14, 0.72)';
+  ctx.fillRect(36, 112, 528, 260);
+  ctx.strokeStyle = '#9ae6b4';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(36, 112, 528, 260);
+
+  ctx.fillStyle = '#ffd166';
+  ctx.font = 'bold 38px sans-serif';
+  ctx.fillText(boardName.toUpperCase(), 300, 185, 496);
+
+  ctx.fillStyle = '#fff8e7';
+  ctx.font = 'bold 30px sans-serif';
+  ctx.fillText(mlName, 300, 245, 496);
+
+  ctx.fillStyle = '#9ae6b4';
+  ctx.font = 'bold 24px sans-serif';
+  ctx.fillText('LIVE 300 × 250 SPONSOR DISPLAY', 300, 315, 496);
+
+  // Interactive CTA footer
+  ctx.fillStyle = '#e63946';
+  ctx.fillRect(110, 396, 380, 62);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('PRESS [E] TO OPEN LIVE AD', 300, 437, 360);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}
+

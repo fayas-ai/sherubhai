@@ -1,5 +1,6 @@
 import React from 'react';
 import { Play, RotateCcw, Settings, Info } from 'lucide-react';
+import { AdSlot } from './AdSlot';
 
 interface TitleScreenProps {
   hasSave: boolean;
@@ -165,6 +166,24 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Home 320×50 Sponsor Banner */}
+        <div className="mt-5">
+          <AdSlot
+            variant="banner_320x50"
+            caption="HOME BANNER"
+            testId="home-banner-320x50"
+          />
+        </div>
+      </div>
+
+      {/* Home 300×250 Ads Board docked cleanly on bottom-right without obstructing Sheru Bhai */}
+      <div className="hidden lg:flex fixed right-8 bottom-20 z-20 pointer-events-auto">
+        <AdSlot
+          variant="board_300x250"
+          caption="HOME ADS BOARD"
+          testId="home-board-300x250"
+        />
       </div>
 
       {/* Single flat bottom control hint line */}

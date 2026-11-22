@@ -15,7 +15,10 @@ import {
   SheruOutfit,
   VehicleDef,
 } from './types/game';
+import { X } from 'lucide-react';
 import {
+  AD_BOARDS,
+  AdBoardDef,
   BUILDINGS,
   EMPTY_PLOTS,
   NPCS,
@@ -68,6 +71,7 @@ import { LevelCompleteModal } from './components/LevelCompleteModal';
 import { HomeWardrobeModal } from './components/HomeWardrobeModal';
 import { GarageModal } from './components/GarageModal';
 import { EmergencyModal } from './components/EmergencyModal';
+import { AdSlot } from './components/AdSlot';
 
 type OverlayPanel =
   | 'none'
@@ -103,6 +107,7 @@ export default function App() {
 
   const [emergencyIncident, setEmergencyIncident] = useState<EmergencyIncident | null>(null);
   const [doctorResult, setDoctorResult] = useState<{ ml: string; en: string } | null>(null);
+  const [activeAdBoard, setActiveAdBoard] = useState<AdBoardDef | null>(null);
 
   const [hud, setHud] = useState<HudSnapshot>({
     playerX: PLAYER_SPAWN.x,
@@ -143,6 +148,7 @@ export default function App() {
   const anyModalOpen =
     activePanel !== 'none' ||
     activeDialogue !== null ||
+    activeAdBoard !== null ||
     levelCompleteNotice !== null ||
     emergencyModalBlocking;
   modalOpenRef.current = anyModalOpen;
@@ -292,6 +298,11 @@ export default function App() {
           const p = EMPTY_PLOTS.find((x) => x.id === target.id);
           if (!p) return;
           setActiveDialogue(buildPlotDialogue(p, cur));
+        } else if (target.kind === 'ad_board') {
+          const board = AD_BOARDS.find((x) => x.id === target.id);
+          if (!board) return;
+          setActiveAdBoard(board);
+          soundEngine.playInteract();
         }
       },
       onCollectiblePickup: (collectibleId: string) => {
@@ -434,6 +445,7 @@ export default function App() {
     soundEngine.unlockAndStartMusic();
     soundEngine.playFanfare();
     setActiveDialogue(null);
+    setActiveAdBoard(null);
     setActivePanel('none');
     setLevelCompleteNotice(null);
     setEmergencyIncident(null);
@@ -454,6 +466,7 @@ export default function App() {
     soundEngine.unlockAndStartMusic();
     soundEngine.playInteract();
     setActiveDialogue(null);
+    setActiveAdBoard(null);
     setActivePanel('none');
     setLevelCompleteNotice(null);
     setEmergencyIncident(null);
@@ -514,6 +527,8 @@ export default function App() {
         if (emergencyIncident && emergencyIncident.status !== 'transporting') {
           worldRef.current?.cancelEmergencyDispatch();
           setEmergencyIncident(null);
+        } else if (activeAdBoard) {
+          setActiveAdBoard(null);
         } else if (activeDialogue) {
           setActiveDialogue(null);
         } else if (levelCompleteNotice) {
@@ -556,6 +571,7 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
+    activeAdBoard,
     activeDialogue,
     activePanel,
     continueGame,
@@ -851,6 +867,49 @@ export default function App() {
         />
       )}
 
+      {/* LIVE 300×250 TOWN ADS BOARD MODAL */}
+      {screen === 'playing' && activeAdBoard && (
+        <div
+          className="fixed inset-0 z-40 bg-black/70 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={activeAdBoard.name}
+        >
+          <div className="w-full max-w-md rounded-2xl bg-[#111d17] border-2 border-[#f5c542] shadow-[0_18px_50px_rgba(0,0,0,0.75)] overflow-hidden text-[#fff8e7]">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 bg-[#172820] border-b border-[#d4a12a]/40">
+              <div>
+                <h2 className="font-display font-extrabold text-base text-[#ffd166] leading-tight">
+                  {activeAdBoard.name}
+                </h2>
+                <p className="text-xs font-ml text-[#9ae6b4]">{activeAdBoard.mlName}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveAdBoard(null)}
+                aria-label="Close Ads Board"
+                className="p-1.5 rounded-lg bg-[#21382d] hover:bg-[#2d4d3e] text-[#ffd166] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 flex flex-col items-center gap-4">
+              <AdSlot
+                variant="board_300x250"
+                caption={activeAdBoard.name}
+                testId="town-board-300x250"
+              />
+              <button
+                type="button"
+                onClick={() => setActiveAdBoard(null)}
+                className="w-full py-2.5 rounded-xl bg-[#f5c542] hover:bg-[#ffd566] text-[#141a17] font-display font-extrabold text-sm cursor-pointer"
+              >
+                BACK TO KERALA TOWN
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* GHOP GHOP INTERNATIONAL BANK DASHBOARD */}
       {screen === 'playing' && activePanel === 'bank' && (
         <BankModal
@@ -931,6 +990,7 @@ export default function App() {
             saveProgressToStorage(progressRef.current);
             void saveProgressToIndexedDb(progressRef.current);
             setActiveDialogue(null);
+            setActiveAdBoard(null);
             setActivePanel('none');
             setLevelCompleteNotice(null);
             setEmergencyIncident(null);

@@ -14,6 +14,7 @@ import {
   VehicleDef,
 } from '../types/game';
 import {
+  AD_BOARDS,
   AUTO_STANDS,
   BUILDINGS,
   BUS_STOPS,
@@ -47,6 +48,7 @@ import {
   SheruModelRig,
   TrafficLightRig,
   applyPlayerAppearance,
+  createAdBoard300x250Model,
   createAutoStandModel,
   createBuildingModel,
   createBuiltShopModel,
@@ -486,9 +488,9 @@ export class ThreeWorld {
     ground.receiveShadow = true;
     this.scene.add(ground);
 
-    // Distant coastal backwater ocean ring beyond the town perimeter
+    // Distant coastal backwater ocean ring beyond the extended town perimeter
     const water = new THREE.Mesh(
-      new THREE.RingGeometry(WORLD_RADIUS + 34, 240, 48),
+      new THREE.RingGeometry(WORLD_RADIUS + 34, 290, 48),
       new THREE.MeshStandardMaterial({
         color: 0x2176ae,
         roughness: 0.22,
@@ -499,9 +501,9 @@ export class ThreeWorld {
     water.position.y = -0.12;
     this.scene.add(water);
 
-    // Crossroads Roads (offset y = 0.025 to prevent any Z-fighting!)
+    // Extended Crossroads Roads (offset y = 0.025 to prevent any Z-fighting!)
     const roadTexNS = createRoadTexture(this.maxAnisotropy);
-    roadTexNS.repeat.set(1, 14);
+    roadTexNS.repeat.set(1, 20);
     const roadMatNS = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: roadTexNS,
@@ -510,14 +512,14 @@ export class ThreeWorld {
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    const mainRoadNS = new THREE.Mesh(new THREE.PlaneGeometry(11, 165), roadMatNS);
+    const mainRoadNS = new THREE.Mesh(new THREE.PlaneGeometry(11, 232), roadMatNS);
     mainRoadNS.rotation.x = -Math.PI / 2;
-    mainRoadNS.position.set(0, 0.025, 0);
+    mainRoadNS.position.set(0, 0.025, 6);
     mainRoadNS.receiveShadow = true;
     this.scene.add(mainRoadNS);
 
     const roadTexEW = createRoadTexture(this.maxAnisotropy);
-    roadTexEW.repeat.set(1, 14);
+    roadTexEW.repeat.set(1, 20);
     const roadMatEW = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: roadTexEW,
@@ -526,20 +528,40 @@ export class ThreeWorld {
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    const mainRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(11, 165), roadMatEW);
+    const mainRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(11, 232), roadMatEW);
     mainRoadEW.rotation.x = -Math.PI / 2;
     mainRoadEW.rotation.z = Math.PI / 2;
     mainRoadEW.position.set(0, 0.032, -4);
     mainRoadEW.receiveShadow = true;
     this.scene.add(mainRoadEW);
 
-    // Secondary market/plaza cross street
-    const northRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 130), roadMatEW);
+    // Secondary North Market/Hospital Avenue
+    const northRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 196), roadMatEW);
     northRoadEW.rotation.x = -Math.PI / 2;
     northRoadEW.rotation.z = Math.PI / 2;
     northRoadEW.position.set(0, 0.03, -32);
     northRoadEW.receiveShadow = true;
     this.scene.add(northRoadEW);
+
+    // Extended Town Ring Roads: West Cinema Strip, East Promenade, & South Coastal Blvd
+    const westRingNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 155), roadMatNS);
+    westRingNS.rotation.x = -Math.PI / 2;
+    westRingNS.position.set(-76, 0.027, 4);
+    westRingNS.receiveShadow = true;
+    this.scene.add(westRingNS);
+
+    const eastRingNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 155), roadMatNS);
+    eastRingNS.rotation.x = -Math.PI / 2;
+    eastRingNS.position.set(76, 0.027, 4);
+    eastRingNS.receiveShadow = true;
+    this.scene.add(eastRingNS);
+
+    const southCoastalEW = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 180), roadMatEW);
+    southCoastalEW.rotation.x = -Math.PI / 2;
+    southCoastalEW.rotation.z = Math.PI / 2;
+    southCoastalEW.position.set(0, 0.028, 72);
+    southCoastalEW.receiveShadow = true;
+    this.scene.add(southCoastalEW);
 
     // Central Town Junction Plaza Circle
     const plaza = new THREE.Mesh(
@@ -613,6 +635,12 @@ export class ThreeWorld {
       [6.8, -28, Math.PI],
       [-26, 2.5, -Math.PI / 2],
       [26, 2.5, -Math.PI / 2],
+      [-70, -18, Math.PI],
+      [-70, 18, Math.PI],
+      [70, -18, 0],
+      [70, 18, 0],
+      [-28, 66, Math.PI / 2],
+      [28, 66, Math.PI / 2],
     ];
     lampCoords.forEach(([lx, lz, rot], idx) => {
       const { group, bulbMat } = createStreetLamp();
@@ -629,13 +657,18 @@ export class ThreeWorld {
       }
     });
 
-    // Secondary South Resort & Home Road
-    const southRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 130), roadMatEW);
+    // Secondary South Resort & Home Road (extended to connect West & East Rings)
+    const southRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 196), roadMatEW);
     southRoadEW.rotation.x = -Math.PI / 2;
     southRoadEW.rotation.z = Math.PI / 2;
     southRoadEW.position.set(0, 0.029, 34);
     southRoadEW.receiveShadow = true;
     this.scene.add(southRoadEW);
+
+    // Freestanding 300×250 3D Town Ads Boards (press E to view live 300×250 Ad)
+    for (const board of AD_BOARDS) {
+      this.scene.add(createAdBoard300x250Model(board, this.maxAnisotropy));
+    }
 
     // Bus Stops, Auto Stands, Marked Parking Bays, Traffic Lights & Zebra Crossings
     for (const stop of BUS_STOPS) {
@@ -686,6 +719,10 @@ export class ThreeWorld {
       [36, 36, 9.2],
       [8, 18, 9.6],
       [-8, 18, 9.8],
+      [-68, -28, 10.2],
+      [68, 28, 9.8],
+      [-54, 66, 10.4],
+      [54, 66, 10.0],
     ];
     innerPalms.forEach(([px, pz, ph], idx) => {
       const rig = createCoconutPalmRig(ph, 1.1);
@@ -726,10 +763,10 @@ export class ThreeWorld {
       restTimer: 0,
     };
 
-    // Natural perimeter palm & hill ring around WORLD_RADIUS (never a bare box wall!)
+    // Natural perimeter palm & hill ring around extended WORLD_RADIUS (never a bare box wall!)
     const hillMat = new THREE.MeshStandardMaterial({ color: 0x3b7a3e, roughness: 0.92 });
-    for (let i = 0; i < 32; i++) {
-      const angle = (i / 32) * Math.PI * 2;
+    for (let i = 0; i < 42; i++) {
+      const angle = (i / 42) * Math.PI * 2;
       const r = WORLD_RADIUS + 4 + (i % 3) * 4;
       const hx = Math.cos(angle) * r;
       const hz = Math.sin(angle) * r;
@@ -1682,6 +1719,23 @@ export class ThreeWorld {
           distance: dist,
           x: p.x,
           z: p.z,
+        },
+        6.5,
+      );
+    }
+
+    // Freestanding 300×250 Town Ads Boards
+    for (const board of AD_BOARDS) {
+      const dist = Math.hypot(board.x - this.playerX, board.z - this.playerZ);
+      consider(
+        {
+          kind: 'ad_board',
+          id: board.id,
+          label: `View ${board.name}`,
+          sublabel: `${board.mlName} · 300×250 Ads Board`,
+          distance: dist,
+          x: board.x,
+          z: board.z,
         },
         6.5,
       );

@@ -12,7 +12,7 @@ export const CURRENCY_SHORT = 'GHOP';
 export const CURRENCY_SYMBOL = '𖠋';
 export const BANK_NAME = 'GHOP GHOP INTERNATIONAL BANK';
 
-export const WORLD_RADIUS = 92;
+export const WORLD_RADIUS = 126;
 
 // Player spawns at the central Kerala town junction facing North (-Z) toward GHOP Bank & Tea Shop
 export const PLAYER_SPAWN = {
@@ -526,6 +526,219 @@ export const BUILDINGS: BuildingDef[] = [
         funnyEffect: 'Sheru floats like a billionaire king!',
       },
     ],
+  },
+  // EXTENDED KERALA TOWN EXPANSION DISTRICTS (West Cinema/Tech Strip, East Backwater Promenade, South Coastal Blvd)
+  {
+    id: 'malabar_cinema',
+    name: 'Malabar Grand Cineplex',
+    mlSign: 'മലബാർ ഗ്രാൻഡ് സിനിപ്ലക്സ്',
+    category: 'mall',
+    district: 'West Cinema Strip',
+    x: -94,
+    z: -18,
+    width: 15,
+    depth: 11,
+    height: 8.6,
+    rotationY: Math.PI / 2,
+    wallColor: 0xfff1f2,
+    roofColor: 0x9f1239,
+    accentColor: 0xe11d48,
+    buyable: true,
+    purchasePrice: 42000000,
+    ownerNpcId: 'npc_tea_owner',
+    products: [
+      {
+        id: 'item_gold_popcorn',
+        name: 'VIP Gold-Butter Popcorn Bucket',
+        mlName: 'വി.ഐ.പി ഗോൾഡ് പോപ്കോൺ',
+        priceGhop: 25000,
+        description: 'Sheru books the entire 300-seat theater just to eat popcorn!',
+        category: 'item',
+        funnyEffect: 'Crowd cheers as Sheru enters the VIP balcony!',
+      },
+    ],
+  },
+  {
+    id: 'kochi_electronics',
+    name: 'Kochi Mega Electronics',
+    mlSign: 'കൊച്ചി മെഗാ ഇലക്ട്രോണിക്സ്',
+    category: 'market',
+    district: 'West Cinema Strip',
+    x: -94,
+    z: 18,
+    width: 13,
+    depth: 10,
+    height: 6.4,
+    rotationY: Math.PI / 2,
+    wallColor: 0xeff6ff,
+    roofColor: 0x1d4ed8,
+    accentColor: 0x0284c7,
+    buyable: true,
+    purchasePrice: 28000000,
+    ownerNpcId: 'npc_grocery_owner',
+    products: [
+      {
+        id: 'item_diamond_phone',
+        name: '24K Diamond GHOP Phone',
+        mlName: 'ഡയമണ്ട് GHOP ഫോൺ',
+        priceGhop: 150000,
+        description: 'Ringtone plays Sheru Bhai anthem at full stadium volume!',
+        category: 'item',
+        funnyEffect: 'Sheru takes a billionaire selfie with the whole street!',
+      },
+    ],
+  },
+  {
+    id: 'backwater_cafe',
+    name: 'Backwater Breeze Cafe',
+    mlSign: 'ബാക്ക്‌വാട്ടർ ബ്രീസ് കഫേ',
+    category: 'tea_shop',
+    district: 'East Promenade',
+    x: 94,
+    z: -18,
+    width: 12,
+    depth: 9,
+    height: 5.8,
+    rotationY: -Math.PI / 2,
+    wallColor: 0xfefce8,
+    roofColor: 0x0f766e,
+    accentColor: 0x14b8a6,
+    buyable: true,
+    purchasePrice: 18500000,
+    ownerNpcId: 'npc_bakery_owner',
+    products: [
+      {
+        id: 'item_karimeen_platter',
+        name: 'Royal Karimeen Pollichathu',
+        mlName: 'റോയൽ കരിമീൻ പൊള്ളിച്ചത്',
+        priceGhop: 18000,
+        description: 'Banana-leaf roasted backwater delicacy worthy of a lion king.',
+        category: 'item',
+        funnyEffect: 'Sheru gives a 5-star billionaire salute!',
+      },
+    ],
+  },
+  {
+    id: 'spice_hypermarket',
+    name: 'Kerala Spice Hypermarket',
+    mlSign: 'കേരള സ്പൈസ് ഹൈപ്പർമാർക്കറ്റ്',
+    category: 'grocery',
+    district: 'East Promenade',
+    x: 94,
+    z: 16,
+    width: 14,
+    depth: 10,
+    height: 6.8,
+    rotationY: -Math.PI / 2,
+    wallColor: 0xf0fdf4,
+    roofColor: 0x15803d,
+    accentColor: 0xf59e0b,
+    buyable: true,
+    purchasePrice: 34000000,
+    ownerNpcId: 'npc_grocery_owner',
+    products: [
+      {
+        id: 'item_cardamom_chest',
+        name: 'Golden Cardamom Treasure Chest',
+        mlName: 'സ്വർണ്ണ ഏലക്ക പെട്ടി',
+        priceGhop: 45000,
+        description: 'Scented with pure Idukki spices and pure billionaire pride.',
+        category: 'item',
+        funnyEffect: 'Aromatic spice sparkles burst around Sheru!',
+      },
+    ],
+  },
+  {
+    id: 'palm_apartments',
+    name: 'Palm Coast Luxury Towers',
+    mlSign: 'പാം കോസ്റ്റ് ലക്ഷ്വറി ടവേഴ്സ്',
+    category: 'apartment',
+    district: 'South Coastal Blvd',
+    x: -36,
+    z: 88,
+    width: 15,
+    depth: 11,
+    height: 10.6,
+    rotationY: Math.PI,
+    wallColor: 0xfef3c7,
+    roofColor: 0xb45309,
+    accentColor: 0xd97706,
+    buyable: true,
+    purchasePrice: 55000000,
+    ownerNpcId: 'npc_hotel_owner',
+    products: [],
+  },
+  {
+    id: 'coastal_showroom',
+    name: 'Royal Marina Boat & Bike Hub',
+    mlSign: 'റോയൽ മറീന ബൈക്ക് ഹബ്',
+    category: 'car_showroom',
+    district: 'South Coastal Blvd',
+    x: 36,
+    z: 88,
+    width: 14,
+    depth: 10,
+    height: 6.6,
+    rotationY: Math.PI,
+    wallColor: 0xf0f9ff,
+    roofColor: 0x0369a1,
+    accentColor: 0x0ea5e9,
+    buyable: true,
+    purchasePrice: 48000000,
+    ownerNpcId: 'npc_car_owner',
+    products: [],
+  },
+];
+
+export interface AdBoardDef {
+  id: string;
+  name: string;
+  mlName: string;
+  x: number;
+  z: number;
+  rotationY: number;
+}
+
+export const AD_BOARDS: AdBoardDef[] = [
+  {
+    id: 'ad_board_home',
+    name: 'Sheru Home Ads Board (300×250)',
+    mlName: 'ഹോം പരസ്യ ബോർഡ് · 300×250',
+    x: -11.5,
+    z: 42.5,
+    rotationY: Math.PI,
+  },
+  {
+    id: 'ad_board_junction',
+    name: 'Main Junction Ads Board (300×250)',
+    mlName: 'ജംഗ്ഷൻ പരസ്യ ബോർഡ് · 300×250',
+    x: 11.5,
+    z: 6.5,
+    rotationY: -Math.PI * 0.78,
+  },
+  {
+    id: 'ad_board_east',
+    name: 'East Promenade Ads Board (300×250)',
+    mlName: 'ഈസ്റ്റ് റോഡ് ബോർഡ് · 300×250',
+    x: 70,
+    z: -12,
+    rotationY: -Math.PI / 2,
+  },
+  {
+    id: 'ad_board_west',
+    name: 'West Cinema Ads Board (300×250)',
+    mlName: 'സിനിമാ റോഡ് ബോർഡ് · 300×250',
+    x: -70,
+    z: 12,
+    rotationY: Math.PI / 2,
+  },
+  {
+    id: 'ad_board_south',
+    name: 'Coastal Blvd Ads Board (300×250)',
+    mlName: 'കോസ്റ്റൽ ബോർഡ് · 300×250',
+    x: 12,
+    z: 65,
+    rotationY: Math.PI,
   },
 ];
 
@@ -1326,6 +1539,9 @@ export const WORLD_COLLECTIBLES: WorldCollectible[] = [
 ];
 
 export function getDistrictAt(x: number, z: number): string {
+  if (z > 64) return 'South Coastal Blvd';
+  if (x < -74) return 'West Cinema Strip';
+  if (x > 74) return 'East Promenade';
   if (x > 46 && z < -28) return 'Hospital Square';
   if (x > 40 && z > 28) return 'Lagoon Resort';
   if (z < -30 && Math.abs(x) < 22) return 'Financial Square';

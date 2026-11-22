@@ -3,6 +3,7 @@ import { Crown, Heart, Sparkles, X, ChevronRight } from 'lucide-react';
 import { ActiveDialogue, DialogueChoice, NpcMemory } from '../types/game';
 import { CURRENCY_SYMBOL } from '../data/worldData';
 import { formatGhop } from '../game/gameLogic';
+import { AdSlot } from './AdSlot';
 
 interface DialogueModalProps {
   dialogue: ActiveDialogue;
@@ -218,6 +219,17 @@ export const DialogueModal: React.FC<DialogueModalProps> = ({
             </div>
           )}
         </div>
+
+        {/* Shop Wall 320×50 Live Sponsor Banner */}
+        {dialogue.sourceType === 'shop' && (
+          <div className="px-5 pb-4 pt-2 border-t border-[#d4a12a]/30 bg-[#0e1914] flex justify-center">
+            <AdSlot
+              variant="banner_320x50"
+              caption="SHOP WALL BANNER"
+              testId="shop-banner-320x50"
+            />
+          </div>
+        )}
       </div>
     </div>
   );

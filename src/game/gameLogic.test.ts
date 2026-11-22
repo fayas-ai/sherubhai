@@ -37,6 +37,7 @@ import {
 import { RANDOM_EVENTS } from '../data/eventsData';
 import { AUTO_DESTINATIONS, VEHICLE_CATALOG } from '../data/vehiclesData';
 import {
+  AD_BOARDS,
   AUTO_STANDS,
   BUILDINGS,
   BUS_STOPS,
@@ -44,7 +45,9 @@ import {
   PARKING_BAYS,
   PLAYER_SPAWN,
   WORLD_RADIUS,
+  getDistrictAt,
 } from '../data/worldData';
+import { AD_SLOTS, buildAdSlotSrcDoc } from '../components/AdSlot';
 
 test('100-level campaign contains exactly 100 unique playable levels across 10 chapters', () => {
   assert.equal(LEVELS.length, 100);
@@ -325,5 +328,57 @@ test('Kerala General Hospital has hollow walk-in doorway colliders, solid perime
   const hitWest = resolveCircleWorldCollision(56.4, -46, 0.85, colliders);
   assert.equal(hitWest.collided, true);
 });
+
+test('ad slot configs & isolated iframe srcDoc match exact 320x50 banner and 300x250 board scripts', () => {
+  assert.equal(AD_SLOTS.banner_320x50.width, 320);
+  assert.equal(AD_SLOTS.banner_320x50.height, 50);
+  assert.equal(AD_SLOTS.banner_320x50.key, '413a7c933ff446f282700a00aeaf2f13');
+
+  assert.equal(AD_SLOTS.board_300x250.width, 300);
+  assert.equal(AD_SLOTS.board_300x250.height, 250);
+  assert.equal(AD_SLOTS.board_300x250.key, 'b4371a85a2736f642613c332799aeb7b');
+
+  const bannerHtml = buildAdSlotSrcDoc('banner_320x50');
+  assert.match(bannerHtml, /413a7c933ff446f282700a00aeaf2f13/);
+  assert.match(bannerHtml, /'height' : 50/);
+  assert.match(bannerHtml, /'width' : 320/);
+  assert.match(bannerHtml, /https:\/\/bauval\.org\/22\/413a7c933ff446f282700a00aeaf2f13/);
+
+  const boardHtml = buildAdSlotSrcDoc('board_300x250');
+  assert.match(boardHtml, /b4371a85a2736f642613c332799aeb7b/);
+  assert.match(boardHtml, /'height' : 250/);
+  assert.match(boardHtml, /'width' : 300/);
+  assert.match(boardHtml, /https:\/\/bauval\.org\/22\/b4371a85a2736f642613c332799aeb7b/);
+});
+
+test('extended Kerala town has expanded radius, 6 outer landmarks, 5 300x250 Ad Boards, and outer districts', () => {
+  assert.ok(WORLD_RADIUS >= 120, `Expected extended WORLD_RADIUS >= 120, got ${WORLD_RADIUS}`);
+
+  const extendedIds = [
+    'malabar_cinema',
+    'kochi_electronics',
+    'backwater_cafe',
+    'spice_hypermarket',
+    'palm_apartments',
+    'coastal_showroom',
+  ];
+  const colliders = getWorldColliders();
+  for (const id of extendedIds) {
+    assert.ok(
+      BUILDINGS.some((b) => b.id === id),
+      `Missing extended building: ${id}`,
+    );
+    assert.ok(
+      colliders.some((c) => c.id === id),
+      `Missing collider for extended building: ${id}`,
+    );
+  }
+
+  assert.ok(AD_BOARDS.length >= 5, `Expected >=5 300x250 Ad Boards, got ${AD_BOARDS.length}`);
+  assert.equal(getDistrictAt(-90, 0), 'West Cinema Strip');
+  assert.equal(getDistrictAt(90, 0), 'East Promenade');
+  assert.equal(getDistrictAt(0, 82), 'South Coastal Blvd');
+});
+
 
 

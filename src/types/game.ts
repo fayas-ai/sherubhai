@@ -429,7 +429,7 @@ export interface WorldCollectible {
 }
 
 export interface NearbyInteractable {
-  kind: 'npc' | 'building' | 'plot' | 'vehicle' | 'collectible' | 'event_spot';
+  kind: 'npc' | 'building' | 'plot' | 'vehicle' | 'collectible' | 'event_spot' | 'ad_board';
   id: string;
   label: string;
   sublabel: string;
