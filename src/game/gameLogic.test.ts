@@ -52,6 +52,11 @@ import {
   getDistrictAt,
 } from '../data/worldData';
 import { AD_SLOTS, buildAdSlotSrcDoc } from '../components/AdSlot';
+import {
+  assignPooled3DAdSurfaces,
+  buildTown3DAdSurfaces,
+  isSurfaceOccludedByBuildings,
+} from './ad3dPool';
 
 test('100-level campaign contains exactly 100 unique playable levels across 10 chapters', () => {
   assert.equal(LEVELS.length, 100);
@@ -443,6 +448,37 @@ test('Daily Active Player streak increments on consecutive days, stays idempoten
   assert.equal(missed.state.bestDailyStreak, 3);
   assert.equal(missed.state.totalActiveDays, 4);
 });
+
+test('3D CSS3D Adsterra pool maps every 300x250 board & 320x50 shop/home wall banner with occlusion & sticky slots', () => {
+  const surfaces = buildTown3DAdSurfaces(BUILDINGS, AD_BOARDS);
+  const boardSurfaces = surfaces.filter((s) => s.variant === 'board_300x250');
+  const bannerSurfaces = surfaces.filter((s) => s.variant === 'banner_320x50');
+
+  assert.equal(boardSurfaces.length, AD_BOARDS.length * 2, 'Each 3D board has front + back 300x250 faces');
+  assert.ok(bannerSurfaces.length >= 45, `Expected >=45 shop/home 320x50 wall banners, got ${bannerSurfaces.length}`);
+  assert.ok(
+    bannerSurfaces.some((s) => s.id === 'sheru_home_front_banner'),
+    'Sheru Home front 320x50 banner must be registered',
+  );
+  assert.ok(
+    bannerSurfaces.some((s) => s.id.startsWith('spice_hypermarket_wall_')),
+    'Shop wall 320x50 banners must be registered',
+  );
+
+  // Standing in front of Main Junction looking North (-Z) should select visible 3D banners & boards
+  const colliders = getWorldColliders();
+  const visibleBoards = assignPooled3DAdSurfaces(0, 18, 0, -1, surfaces, 'board_300x250', 3, 54, colliders, [
+    null,
+    null,
+    null,
+  ]);
+  assert.ok(visibleBoards.some((b) => b !== null), 'Expected at least 1 visible 3D Ad Board near Main Junction');
+
+  // Building between camera and distant surface properly occludes it
+  const blocked = isSurfaceOccludedByBuildings(0, 12, -16, -32, 'ghop_bank', colliders);
+  assert.equal(blocked, true, 'Tea Shop at (-16,-16) should occlude ray passing through it');
+});
+
 
 
 

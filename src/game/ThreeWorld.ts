@@ -1,5 +1,12 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { CSS3DObject, CSS3DRenderer } from 'three/addons/renderers/CSS3DRenderer.js';
+import { AD_SLOTS, AdSlotVariant, buildAdSlotSrcDoc } from '../components/AdSlot';
+import {
+  Ad3DSurface,
+  assignPooled3DAdSurfaces,
+  buildTown3DAdSurfaces,
+} from './ad3dPool';
 import {
   AABB,
   AutoDestination,
@@ -201,6 +208,25 @@ export interface ThreeWorldCallbacks {
 export class ThreeWorld {
   private container: HTMLElement;
   private renderer: THREE.WebGLRenderer;
+  private cssRenderer: CSS3DRenderer;
+  private cssScene: THREE.Scene;
+  private adSurfaces: Ad3DSurface[] = [];
+  private adBoardPool: {
+    obj: CSS3DObject;
+    el: HTMLDivElement;
+    iframe: HTMLIFrameElement;
+    variant: AdSlotVariant;
+    loaded: boolean;
+    assignedSurfaceId: string | null;
+  }[] = [];
+  private adBannerPool: {
+    obj: CSS3DObject;
+    el: HTMLDivElement;
+    iframe: HTMLIFrameElement;
+    variant: AdSlotVariant;
+    loaded: boolean;
+    assignedSurfaceId: string | null;
+  }[] = [];
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private isSoftwareGl: boolean;
@@ -338,12 +364,33 @@ export class ThreeWorld {
     this.renderer.toneMappingExposure = 1.12;
     this.applyGraphicsQuality(settings.graphicsQuality);
 
-    this.renderer.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
+    const initW = container.clientWidth || window.innerWidth;
+    const initH = container.clientHeight || window.innerHeight;
+    this.renderer.setSize(initW, initH);
+    this.renderer.domElement.style.position = 'relative';
+    this.renderer.domElement.style.zIndex = '0';
     this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
     this.renderer.domElement.setAttribute('data-testid', 'game-canvas');
     container.appendChild(this.renderer.domElement);
+
+    // Synchronized CSS3DRenderer overlay that projects live Adsterra 300×250 & 320×50 HTML ads directly onto 3D town boards & shop/home walls
+    this.cssScene = new THREE.Scene();
+    this.cssRenderer = new CSS3DRenderer();
+    this.cssRenderer.setSize(initW, initH);
+    this.cssRenderer.domElement.style.position = 'absolute';
+    this.cssRenderer.domElement.style.top = '0';
+    this.cssRenderer.domElement.style.left = '0';
+    this.cssRenderer.domElement.style.width = '100%';
+    this.cssRenderer.domElement.style.height = '100%';
+    this.cssRenderer.domElement.style.pointerEvents = 'none';
+    this.cssRenderer.domElement.style.overflow = 'hidden';
+    this.cssRenderer.domElement.style.zIndex = '1';
+    this.cssRenderer.domElement.style.visibility = 'hidden';
+    this.cssRenderer.domElement.setAttribute('data-testid', 'world-3d-ads-layer');
+    container.appendChild(this.cssRenderer.domElement);
+    this.init3DAdsterraPool();
 
     this.maxAnisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
 
@@ -1816,7 +1863,9 @@ export class ThreeWorld {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    this.cssRenderer.setSize(w, h);
     this.renderer.render(this.scene, this.camera);
+    this.cssRenderer.render(this.cssScene, this.camera);
   };
 
   private handleBlur = () => {
@@ -2958,6 +3007,159 @@ export class ThreeWorld {
     }
   }
 
+  private create3DAdsterraSlot(variant: AdSlotVariant, index: number) {
+    const cfg = AD_SLOTS[variant];
+    const wrapper = document.createElement('div');
+    wrapper.style.width = `${cfg.width}px`;
+    wrapper.style.height = `${cfg.height}px`;
+    wrapper.style.overflow = 'hidden';
+    wrapper.style.background = 'transparent';
+    wrapper.style.pointerEvents = 'none';
+    wrapper.style.backfaceVisibility = 'hidden';
+    wrapper.setAttribute('data-testid', `world-3d-${variant}-${index}`);
+
+    const iframe = document.createElement('iframe');
+    iframe.title = `${cfg.label} 3D #${index + 1}`;
+    iframe.width = String(cfg.width);
+    iframe.height = String(cfg.height);
+    iframe.scrolling = 'no';
+    iframe.frameBorder = '0';
+    iframe.style.width = `${cfg.width}px`;
+    iframe.style.height = `${cfg.height}px`;
+    iframe.style.border = '0';
+    iframe.style.display = 'block';
+    iframe.style.background = 'transparent';
+    wrapper.appendChild(iframe);
+
+    const obj = new CSS3DObject(wrapper);
+    obj.visible = false;
+    this.cssScene.add(obj);
+
+    return {
+      obj,
+      el: wrapper,
+      iframe,
+      variant,
+      loaded: false,
+      assignedSurfaceId: null as string | null,
+    };
+  }
+
+  private hydrateMounted3DAdIframes() {
+    for (const pool of [this.adBoardPool, this.adBannerPool]) {
+      for (const slot of pool) {
+        if (slot.loaded || !slot.obj.visible || !slot.iframe.isConnected) continue;
+        try {
+          const doc = slot.iframe.contentWindow?.document ?? slot.iframe.contentDocument;
+          if (!doc) continue;
+          doc.open();
+          doc.write(buildAdSlotSrcDoc(slot.variant));
+          doc.close();
+          slot.loaded = true;
+          slot.el.dataset.adLoaded = 'true';
+        } catch {
+          // ignore if blocked by host browser
+        }
+      }
+    }
+  }
+
+  private init3DAdsterraPool() {
+    this.adSurfaces = buildTown3DAdSurfaces(BUILDINGS, AD_BOARDS);
+    for (let i = 0; i < 3; i++) {
+      this.adBoardPool.push(this.create3DAdsterraSlot('board_300x250', i));
+    }
+    for (let i = 0; i < 4; i++) {
+      this.adBannerPool.push(this.create3DAdsterraSlot('banner_320x50', i));
+    }
+  }
+
+  private update3DAdOverlays() {
+    const showLayer = this.mode === 'playing' && !this.modalOpen && !this.inHospital;
+    this.cssRenderer.domElement.style.visibility = showLayer ? 'visible' : 'hidden';
+
+    if (!showLayer) {
+      for (const s of this.adBoardPool) {
+        s.obj.visible = false;
+        s.el.style.pointerEvents = 'none';
+      }
+      for (const s of this.adBannerPool) {
+        s.obj.visible = false;
+        s.el.style.pointerEvents = 'none';
+      }
+      return;
+    }
+
+    this.camera.getWorldDirection(_v1);
+    const fwdLen = Math.hypot(_v1.x, _v1.z) || 1;
+    const camFwdX = _v1.x / fwdLen;
+    const camFwdZ = _v1.z / fwdLen;
+    const camX = this.camera.position.x;
+    const camZ = this.camera.position.z;
+
+    const assignedBoards = assignPooled3DAdSurfaces(
+      camX,
+      camZ,
+      camFwdX,
+      camFwdZ,
+      this.adSurfaces,
+      'board_300x250',
+      this.adBoardPool.length,
+      54,
+      this.colliders,
+      this.adBoardPool.map((p) => p.assignedSurfaceId),
+    );
+
+    for (let i = 0; i < this.adBoardPool.length; i++) {
+      const slot = this.adBoardPool[i];
+      const surf = assignedBoards[i];
+      if (!surf) {
+        slot.assignedSurfaceId = null;
+        slot.obj.visible = false;
+        slot.el.style.pointerEvents = 'none';
+        continue;
+      }
+      slot.assignedSurfaceId = surf.id;
+      slot.obj.position.set(surf.x, surf.y, surf.z);
+      slot.obj.rotation.set(0, surf.rotY, 0);
+      slot.obj.scale.set(surf.widthM / 300, surf.heightM / 250, 1);
+      slot.obj.visible = true;
+      slot.el.style.pointerEvents = 'auto';
+      slot.el.dataset.surfaceId = surf.id;
+    }
+
+    const assignedBanners = assignPooled3DAdSurfaces(
+      camX,
+      camZ,
+      camFwdX,
+      camFwdZ,
+      this.adSurfaces,
+      'banner_320x50',
+      this.adBannerPool.length,
+      40,
+      this.colliders,
+      this.adBannerPool.map((p) => p.assignedSurfaceId),
+    );
+
+    for (let i = 0; i < this.adBannerPool.length; i++) {
+      const slot = this.adBannerPool[i];
+      const surf = assignedBanners[i];
+      if (!surf) {
+        slot.assignedSurfaceId = null;
+        slot.obj.visible = false;
+        slot.el.style.pointerEvents = 'none';
+        continue;
+      }
+      slot.assignedSurfaceId = surf.id;
+      slot.obj.position.set(surf.x, surf.y, surf.z);
+      slot.obj.rotation.set(0, surf.rotY, 0);
+      slot.obj.scale.set(surf.widthM / 320, surf.heightM / 50, 1);
+      slot.obj.visible = true;
+      slot.el.style.pointerEvents = 'auto';
+      slot.el.dataset.surfaceId = surf.id;
+    }
+  }
+
   private afterDraw(cb: () => void) {
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
     const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -2989,9 +3191,12 @@ export class ThreeWorld {
     this.updateHospitalInterior(dt);
     this.updateNpcsAndAmbient(dt);
     this.updateCamera(dt);
+    this.update3DAdOverlays();
     this.emitHudIfDue(dt);
 
     this.renderer.render(this.scene, this.camera);
+    this.cssRenderer.render(this.cssScene, this.camera);
+    this.hydrateMounted3DAdIframes();
 
     if (this.isSoftwareGl) {
       this.afterDraw(this.tick);
@@ -3017,6 +3222,10 @@ export class ThreeWorld {
     this.renderer.dispose();
     if (dom.parentElement === this.container) {
       this.container.removeChild(dom);
+    }
+    const cssDom = this.cssRenderer.domElement;
+    if (cssDom.parentElement === this.container) {
+      this.container.removeChild(cssDom);
     }
   }
 }
