@@ -352,32 +352,46 @@ export default function App() {
       onRoadEgo: (kind) => {
         showRoadEgo(kind);
       },
-      onEmergencyIncident: (cause, x, z) => {
-        if (incidentRef.current && incidentRef.current.status !== 'treated') return;
+      onEmergencyIncident: (cause, x, z, roadName) => {
+        if (
+          cause !== 'airplane_crash' &&
+          incidentRef.current &&
+          incidentRef.current.status !== 'treated'
+        ) {
+          return;
+        }
+        const crashSite = roadName ?? 'Town Road';
         const meta =
-          cause === 'coconut_drop'
+          cause === 'airplane_crash'
             ? {
-                title: 'COCONUT BONK UNDER PALM TREE!',
+                title: `MAYDAY! PLANE BLAST ON ${crashSite.toUpperCase()}!`,
                 mlMessage:
-                  'അയ്യോ! തെങ്ങിൻ തോട്ടത്തിൽ നിന്ന് ഒരു വലിയ തേങ്ങ ഷേരു ഭായിയുടെ തലയിൽ വീണു! നാട്ടുകാർ 108 ആംബുലൻസ് വിളിക്കുന്നു!',
-                enMessage:
-                  'BONK! A giant Kerala coconut dropped right onto Sheru Bhai! Cartoon safe — bystanders urge you to call 108 Ambulance!',
+                  'അയ്യോ! റൺവേ വിട്ട് ടൗൺ റോഡിൽ വിമാനം ഇറക്കി പൊട്ടിത്തെറിച്ചു! 108 ആംബുലൻസും ഫയർ ഫോഴ്‌സും സൈറൺ ഓണാക്കി പാഞ്ഞെത്തുന്നു!',
+                enMessage: `BOOM! Manual landing on ${crashSite} instead of Airport Runway 09/27 caused a cartoon plane blast! 108 Ambulance & Kerala Fire Rescue Engine are rushing to the scene!`,
               }
-            : cause === 'pedestrian_bump'
+            : cause === 'coconut_drop'
               ? {
-                  title: 'SAFE ROAD BUMP — WITNESSES CALL 108!',
+                  title: 'COCONUT BONK UNDER PALM TREE!',
                   mlMessage:
-                    'ആർക്കും പരിക്കില്ല! പക്ഷേ നാട്ടുകാർ സുരക്ഷയ്ക്കായി 108 ആംബുലൻസ് വിളിക്കണം എന്ന് പറയുന്നു!',
+                    'അയ്യോ! തെങ്ങിൻ തോട്ടത്തിൽ നിന്ന് ഒരു വലിയ തേങ്ങ ഷേരു ഭായിയുടെ തലയിൽ വീണു! നാട്ടുകാർ 108 ആംബുലൻസ് വിളിക്കുന്നു!',
                   enMessage:
-                    'Safe cartoon bump — nobody is injured! Nearby people immediately suggest calling 108 Ambulance to check everyone at the Hospital!',
+                    'BONK! A giant Kerala coconut dropped right onto Sheru Bhai! Cartoon safe — bystanders urge you to call 108 Ambulance!',
                 }
-              : {
-                  title: 'ZEBRA CROSSING SCARE — CALL 108!',
-                  mlMessage:
-                    'അയ്യോ! സീബ്രാ ക്രോസിംഗിൽ വണ്ടി തട്ടി! ഷേരു ഭായിക്ക് ഒന്നും പറ്റിയില്ലെങ്കിലും 108 ആംബുലൻസ് വിളിക്കാം!',
-                  enMessage:
-                    'Whoa! A close call at the Kerala zebra crossing! Cartoon safe — tap below to summon the 108 Ambulance to Kerala General Hospital!',
-                };
+              : cause === 'pedestrian_bump'
+                ? {
+                    title: 'SAFE ROAD BUMP — WITNESSES CALL 108!',
+                    mlMessage:
+                      'ആർക്കും പരിക്കില്ല! പക്ഷേ നാട്ടുകാർ സുരക്ഷയ്ക്കായി 108 ആംബുലൻസ് വിളിക്കണം എന്ന് പറയുന്നു!',
+                    enMessage:
+                      'Safe cartoon bump — nobody is injured! Nearby people immediately suggest calling 108 Ambulance to check everyone at the Hospital!',
+                  }
+                : {
+                    title: 'ZEBRA CROSSING SCARE — CALL 108!',
+                    mlMessage:
+                      'അയ്യോ! സീബ്രാ ക്രോസിംഗിൽ വണ്ടി തട്ടി! ഷേരു ഭായിക്ക് ഒന്നും പറ്റിയില്ലെങ്കിലും 108 ആംബുലൻസ് വിളിക്കാം!',
+                    enMessage:
+                      'Whoa! A close call at the Kerala zebra crossing! Cartoon safe — tap below to summon the 108 Ambulance to Kerala General Hospital!',
+                  };
 
         setDoctorResult(null);
         setActiveDialogue(null);
@@ -390,8 +404,17 @@ export default function App() {
           enMessage: meta.enMessage,
           sceneX: x,
           sceneZ: z,
-          status: 'alert',
+          crashRoadName: cause === 'airplane_crash' ? crashSite : undefined,
+          status: cause === 'airplane_crash' ? 'ambulance_en_route' : 'alert',
         });
+        if (cause === 'airplane_crash') {
+          showToast(
+            `MAYDAY! Plane blast on ${crashSite}! 108 Ambulance & Fire Rescue racing in!`,
+          );
+        }
+      },
+      onSafeLanding: (aircraftName) => {
+        showToast(`Smooth Touchdown! ${aircraftName} landed safely on Runway 09/27!`);
       },
       onAmbulanceArrived: () => {
         setEmergencyIncident((prev) =>
@@ -831,6 +854,7 @@ export default function App() {
             }
           }}
           onTouchMove={(x, y, running) => worldRef.current?.setTouchInput(x, y, running)}
+          onTouchFlightVertical={(dir) => worldRef.current?.setTouchFlightVertical(dir)}
           onTouchLook={(dx, dy) => worldRef.current?.rotateCameraDelta(dx, dy)}
         />
       )}

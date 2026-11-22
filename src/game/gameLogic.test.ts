@@ -2,11 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AIRPORT_RUNWAY,
+  evaluateAirplaneLanding,
   isAircraftType,
+  isPointOnAirportTarmac,
   isPointOnRunway,
+  mapMobileFlightCursor,
   stepAirplanePhysics,
   stepGroundVehiclePhysics,
 } from './vehiclePhysics';
+import {
+  TOWN_PALM_TREES,
+  TOWN_ROADS,
+  doesBoxOverlapAnyRoad,
+  isPointOnAnyRoad,
+} from './roadNetwork';
 import {
   HOSPITAL_INTERIOR_BOUNDS,
   applyDialogueChoice,
@@ -52,6 +61,7 @@ import {
   AUTO_STANDS,
   BUILDINGS,
   BUS_STOPS,
+  EMPTY_PLOTS,
   NPCS,
   PARKING_BAYS,
   PLAYER_SPAWN,
@@ -589,6 +599,95 @@ test('Kerala International Airport, Easy Ground Driving physics, and Easy Aeropl
   assert.equal(landed, true, 'Auto-land should smoothly touch down to y=0');
   assert.equal(landing.roll, 0);
 });
+
+test('Zero stores, shops, plots, ad boards, stands, or palm trees overlap any paved road; manual off-runway landing blasts; mobile cursor UP=fly / DOWN=land', () => {
+  // 1. Every building, empty plot, ad board, bus stop, auto stand, and coconut palm must be 100% clear of TOWN_ROADS
+  assert.ok(TOWN_ROADS.length >= 11, 'Expected full Kerala town road network');
+
+  for (const b of BUILDINGS) {
+    const overlap = doesBoxOverlapAnyRoad(b.x, b.z, b.width / 2, b.depth / 2, 0.2);
+    assert.equal(
+      overlap,
+      null,
+      `Building "${b.id}" at (${b.x}, ${b.z}) overlaps paved road "${overlap}"`,
+    );
+  }
+
+  for (const p of EMPTY_PLOTS) {
+    const overlap = doesBoxOverlapAnyRoad(p.x, p.z, 3.8, 3.3, 0.2);
+    assert.equal(
+      overlap,
+      null,
+      `Empty plot "${p.id}" at (${p.x}, ${p.z}) overlaps paved road "${overlap}"`,
+    );
+  }
+
+  for (const board of AD_BOARDS) {
+    const overlap = doesBoxOverlapAnyRoad(board.x, board.z, 1.4, 0.9, 0.15);
+    assert.equal(
+      overlap,
+      null,
+      `Ad board "${board.id}" at (${board.x}, ${board.z}) overlaps paved road "${overlap}"`,
+    );
+  }
+
+  for (const stop of BUS_STOPS) {
+    const overlap = doesBoxOverlapAnyRoad(stop.x, stop.z, 1.8, 1.1, 0.1);
+    assert.equal(
+      overlap,
+      null,
+      `Bus stop "${stop.id}" at (${stop.x}, ${stop.z}) overlaps paved road "${overlap}"`,
+    );
+  }
+
+  for (const stand of AUTO_STANDS) {
+    const overlap = doesBoxOverlapAnyRoad(stand.x, stand.z, 1.6, 1.1, 0.1);
+    assert.equal(
+      overlap,
+      null,
+      `Auto stand "${stand.id}" at (${stand.x}, ${stand.z}) overlaps paved road "${overlap}"`,
+    );
+  }
+
+  for (let i = 0; i < TOWN_PALM_TREES.length; i++) {
+    const [px, pz] = TOWN_PALM_TREES[i];
+    assert.equal(
+      isPointOnAnyRoad(px, pz, 0.85),
+      false,
+      `Coconut palm #${i} at (${px}, ${pz}) sits on a paved road!`,
+    );
+  }
+
+  // 2. Manual off-runway landing triggers 'crash_blast', while Runway 09/27 / Apron / Auto-Land are safe
+  assert.equal(isPointOnAirportTarmac(0, AIRPORT_RUNWAY.centerZ), true);
+  assert.equal(isPointOnAirportTarmac(0, 0), false);
+  assert.equal(evaluateAirplaneLanding(0, AIRPORT_RUNWAY.centerZ, 16, false), 'safe_runway');
+  assert.equal(evaluateAirplaneLanding(0, 0, 16, true), 'safe_runway');
+  assert.equal(evaluateAirplaneLanding(0, 0, 0.5, false), 'safe_runway');
+  assert.equal(evaluateAirplaneLanding(0, 0, 14, false), 'crash_blast');
+  assert.equal(evaluateAirplaneLanding(20, -4, 6.5, false), 'crash_blast');
+
+  // 3. Mobile flight cursor: UP (negative Y) flies/climbs up, DOWN (positive Y) descends/lands
+  const cursorUp = mapMobileFlightCursor(0, -0.8, true);
+  assert.equal(cursorUp.climb, true, 'Pushing flight cursor UP must climb/fly');
+  assert.equal(cursorUp.descend, false);
+  assert.ok(cursorUp.throttle >= 0.65, 'Pushing flight cursor UP must apply strong forward throttle');
+
+  const cursorDown = mapMobileFlightCursor(0, 0.8, true);
+  assert.equal(cursorDown.climb, false);
+  assert.equal(cursorDown.descend, true, 'Pulling flight cursor DOWN must descend/land');
+
+  const cursorRight = mapMobileFlightCursor(0.9, -0.5, true);
+  assert.equal(cursorRight.climb, true);
+  assert.ok(cursorRight.turn > 0.5, 'Pushing flight cursor RIGHT must bank right (+turn)');
+
+  // 4. Hospital treatment handles 'airplane_crash' cause cleanly
+  const state = createInitialProgress();
+  const crashTreated = resolveHospitalTreatment(state, 'airplane_crash');
+  assert.ok(crashTreated.state.reputation >= state.reputation + 15);
+  assert.match(crashTreated.enDoctorLine, /Runway 09\/27/i);
+});
+
 
 
 

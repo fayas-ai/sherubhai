@@ -67,6 +67,7 @@ interface GameHUDProps {
   onJumpClick: () => void;
   onTeleportToObjective: () => void;
   onTouchMove: (x: number, y: number, running: boolean) => void;
+  onTouchFlightVertical?: (dir: -1 | 0 | 1) => void;
   onTouchLook: (dx: number, dy: number) => void;
 }
 
@@ -105,6 +106,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onJumpClick,
   onTeleportToObjective,
   onTouchMove,
+  onTouchFlightVertical,
   onTouchLook,
 }) => {
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
@@ -155,9 +157,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     ctx.fillStyle = '#1b3526';
     ctx.fillRect(0, 0, w, h);
 
-    // Roads (Main Cross + Outer Ring Boulevards for Extended Town)
+    // Roads (Main Cross + Outer Ring Boulevards matching TOWN_ROADS)
     ctx.fillStyle = '#474f57';
-    ctx.fillRect(cx - 3, 0, 6, h);
+    // mainRoadNS bounded cleanly between z = -104 and z = +108 (stops before Airport & Beach)
+    ctx.fillRect(cx - 3, cy - 104 * scale, 6, 212 * scale);
     ctx.fillRect(0, cy - 4 * scale - 3, w, 6);
     ctx.fillRect(0, cy - 32 * scale - 2, w, 4);
     ctx.fillRect(0, cy + 34 * scale - 2, w, 4);
@@ -165,7 +168,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     ctx.fillRect(0, cy + 72 * scale - 2, w, 4);
     ctx.fillRect(0, cy + 104 * scale - 2, w, 4);
     ctx.fillRect(cx - 76 * scale - 2, 0, 4, h);
-    ctx.fillRect(cx + 76 * scale - 2, 0, 4, h);
+    ctx.fillRect(cx + 80 * scale - 2, 0, 4, h);
     ctx.fillRect(cx - 108 * scale - 2, 0, 4, h);
     ctx.fillRect(cx + 108 * scale - 2, 0, 4, h);
 
@@ -706,20 +709,47 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       </div>
 
       {/* BOTTOM ROW: Contextual Interact Prompt, 180 KM/H Driving Bar + Autopilot, Minimap & Mobile Controls */}
-      <div className="mt-auto flex items-end justify-between gap-2 sm:gap-3">
-        {/* Mobile Left Virtual Joystick */}
-        <div className="flex items-end gap-2">
+      <div className="mt-auto flex flex-wrap sm:flex-nowrap items-end justify-between gap-2 sm:gap-3">
+        {/* Mobile Left Virtual Joystick / Flight Cursor (UP = FLY, DOWN = LAND) */}
+        <div className="order-2 sm:order-1 flex items-end gap-2">
           {isMobileViewport && (
             <div
+              data-testid={hud.inVehicleIsAircraft ? 'mobile-flight-cursor' : 'mobile-joystick'}
               onPointerDown={handleJoyStart}
               onPointerMove={handleJoyMove}
               onPointerUp={handleJoyEnd}
               onPointerCancel={handleJoyEnd}
-              aria-label="Movement Joystick"
-              className="pointer-events-auto relative w-28 h-28 rounded-full bg-[#111d17]/75 border-2 border-[#d4a12a]/80 flex items-center justify-center touch-none"
+              aria-label={
+                hud.inVehicleIsAircraft
+                  ? 'Flight Cursor: Push Up to Fly, Pull Down to Land'
+                  : 'Movement Joystick'
+              }
+              className={`pointer-events-auto relative rounded-full flex items-center justify-center touch-none select-none ${
+                hud.inVehicleIsAircraft
+                  ? 'w-32 h-32 bg-[#0c1d2b]/85 border-2 border-[#38bdf8] shadow-[0_4px_18px_rgba(0,0,0,0.6)]'
+                  : 'w-28 h-28 bg-[#111d17]/75 border-2 border-[#d4a12a]/80'
+              }`}
             >
+              {hud.inVehicleIsAircraft && (
+                <>
+                  <span className="pointer-events-none absolute top-1.5 left-1/2 -translate-x-1/2 text-[9px] font-extrabold tracking-wide text-[#7dd3fc] whitespace-nowrap">
+                    ▲ FLY UP
+                  </span>
+                  <span className="pointer-events-none absolute bottom-1.5 left-1/2 -translate-x-1/2 text-[9px] font-extrabold tracking-wide text-[#fbbf24] whitespace-nowrap">
+                    ▼ LAND
+                  </span>
+                  <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-extrabold text-[#bae6fd]">
+                    ◄
+                  </span>
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-extrabold text-[#bae6fd]">
+                    ►
+                  </span>
+                </>
+              )}
               <div
-                className="w-11 h-11 rounded-full bg-[#f5c542] border-2 border-[#161c18] shadow-md"
+                className={`w-11 h-11 rounded-full border-2 border-[#161c18] shadow-md ${
+                  hud.inVehicleIsAircraft ? 'bg-[#38bdf8]' : 'bg-[#f5c542]'
+                }`}
                 style={{ transform: `translate(${joyKnob.x}px, ${joyKnob.y}px)` }}
               />
             </div>
@@ -727,16 +757,29 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
 
         {/* Bottom-Center: Contextual Interaction Prompt OR Active Vehicle 180 KM/H Driving Bar */}
-        <div className="flex flex-col items-center gap-2 mb-1 max-w-full">
+        <div className="order-1 sm:order-2 w-full sm:w-auto flex flex-col items-center gap-1.5 mb-0 sm:mb-1 max-w-full">
           {hud.inVehicleName && hud.inVehicleIsAircraft ? (
             <div
               data-testid="flight-hud"
-              className="pointer-events-auto flex flex-col gap-2 px-3.5 sm:px-4 py-2.5 rounded-xl bg-[#0c1d2b]/95 border-2 border-[#38bdf8] shadow-[0_8px_28px_rgba(0,0,0,0.7)] max-w-[94vw]"
+              className="pointer-events-auto w-full sm:w-auto flex flex-col gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-1.5 sm:py-2.5 rounded-xl bg-[#0c1d2b]/95 border-2 border-[#38bdf8] shadow-[0_8px_28px_rgba(0,0,0,0.7)] max-w-full sm:max-w-[94vw]"
             >
-              <div className="flex flex-wrap items-center justify-between gap-3">
+              {hud.offRunwayWarning && (
+                <div
+                  data-testid="off-runway-warning"
+                  className="px-2.5 py-1 rounded-lg bg-[#991b1b] border border-[#fde047] text-[#fef08a] text-[10px] sm:text-xs font-extrabold text-center tracking-wide animate-pulse"
+                >
+                  ⚠ OFF-RUNWAY! ROAD LANDING = BLAST! LAND ON RUNWAY 09/27 OR PRESS AUTO-LAND
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
                 <div>
-                  <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[#7dd3fc]">
-                    <span>EASY FLIGHT · W THROTTLE · A/D TURN · SPACE CLIMB · SHIFT LAND</span>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-[#7dd3fc]">
+                    <span>
+                      {isMobileViewport
+                        ? 'CURSOR ▲ FLY UP · ▼ LAND · ◄► TURN'
+                        : 'EASY FLIGHT · W THROTTLE · A/D TURN · SPACE CLIMB · SHIFT LAND'}
+                    </span>
                     <span
                       className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold ${
                         hud.flightState === 'airborne'
@@ -749,7 +792,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                       {hud.flightState === 'airborne'
                         ? 'AIRBORNE'
                         : hud.flightState === 'takeoff_ready'
-                          ? 'TAKEOFF READY · PRESS SPACE'
+                          ? 'TAKEOFF READY · FLY UP'
                           : 'RUNWAY TAXI'}
                     </span>
                   </div>
@@ -963,7 +1006,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
 
         {/* Bottom-Right: Mobile Action Buttons + Live 2D Town Minimap */}
-        <div className="flex items-end gap-3">
+        <div className="order-3 flex items-end gap-3">
           {isMobileViewport && (
             <div className="pointer-events-auto flex flex-col gap-2 items-end">
               <div
@@ -971,40 +1014,75 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 onPointerMove={handleLookMove}
                 onPointerUp={handleLookEnd}
                 onPointerCancel={handleLookEnd}
-                className="w-24 h-12 rounded-lg bg-[#111d17]/70 border border-[#d4a12a]/60 flex items-center justify-center text-[10px] font-bold text-[#ffd166] touch-none"
+                className="w-24 h-11 rounded-lg bg-[#111d17]/75 border border-[#d4a12a]/60 flex items-center justify-center text-[10px] font-bold text-[#ffd166] touch-none select-none"
               >
                 DRAG CAM
               </div>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next = !touchRunning;
-                    setTouchRunning(next);
-                  }}
-                  className={`px-3 py-2.5 rounded-lg font-extrabold text-xs border ${
-                    touchRunning
-                      ? 'bg-[#f5c542] text-[#141a17] border-[#fff]'
-                      : 'bg-[#111d17]/90 text-[#fff8e7] border-[#d4a12a]'
-                  }`}
-                >
-                  RUN
-                </button>
-                <button
-                  type="button"
-                  onClick={onJumpClick}
-                  className="px-3.5 py-2.5 rounded-lg bg-[#1c3d2e]/95 border border-[#9ae6b4] text-[#fff8e7] font-extrabold text-xs"
-                >
-                  JUMP
-                </button>
-                <button
-                  type="button"
-                  onClick={onInteractClick}
-                  className="px-3.5 py-2.5 rounded-lg bg-[#f5c542] text-[#141a17] font-extrabold text-xs"
-                >
-                  ACT
-                </button>
-              </div>
+              {hud.inVehicleIsAircraft ? (
+                <div className="flex flex-col gap-1.5 items-end">
+                  <button
+                    type="button"
+                    data-testid="mobile-fly-up"
+                    aria-label="Fly Up"
+                    onPointerDown={(e) => {
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                      onTouchFlightVertical?.(1);
+                    }}
+                    onPointerUp={() => onTouchFlightVertical?.(0)}
+                    onPointerCancel={() => onTouchFlightVertical?.(0)}
+                    onPointerLeave={() => onTouchFlightVertical?.(0)}
+                    className="w-24 py-2.5 rounded-lg bg-[#0284c7] active:bg-[#38bdf8] border-2 border-[#7dd3fc] text-white font-display font-extrabold text-xs shadow-md touch-none select-none"
+                  >
+                    ▲ FLY UP
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="mobile-fly-down"
+                    aria-label="Land Plane"
+                    onPointerDown={(e) => {
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                      onTouchFlightVertical?.(-1);
+                    }}
+                    onPointerUp={() => onTouchFlightVertical?.(0)}
+                    onPointerCancel={() => onTouchFlightVertical?.(0)}
+                    onPointerLeave={() => onTouchFlightVertical?.(0)}
+                    className="w-24 py-2.5 rounded-lg bg-[#b45309] active:bg-[#f59e0b] border-2 border-[#fde047] text-white font-display font-extrabold text-xs shadow-md touch-none select-none"
+                  >
+                    ▼ LAND
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !touchRunning;
+                      setTouchRunning(next);
+                    }}
+                    className={`px-3 py-2.5 rounded-lg font-extrabold text-xs border ${
+                      touchRunning
+                        ? 'bg-[#f5c542] text-[#141a17] border-[#fff]'
+                        : 'bg-[#111d17]/90 text-[#fff8e7] border-[#d4a12a]'
+                    }`}
+                  >
+                    RUN
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onJumpClick}
+                    className="px-3.5 py-2.5 rounded-lg bg-[#1c3d2e]/95 border border-[#9ae6b4] text-[#fff8e7] font-extrabold text-xs"
+                  >
+                    JUMP
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onInteractClick}
+                    className="px-3.5 py-2.5 rounded-lg bg-[#f5c542] text-[#141a17] font-extrabold text-xs"
+                  >
+                    ACT
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

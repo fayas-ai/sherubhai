@@ -226,6 +226,41 @@ class SoundEngine {
     this.playTone(587, 784, 0.16, 'triangle', 0.18, 0.11);
   }
 
+  public playPlaneBlast() {
+    // Deep cinematic explosion sub-boom + fiery crackle noise burst!
+    this.playTone(115, 22, 0.72, 'sawtooth', 0.34, 0);
+    this.playTone(72, 18, 0.9, 'triangle', 0.32, 0.04);
+    this.playTone(210, 42, 0.42, 'square', 0.18, 0.08);
+    if (this.settings.muted || this.settings.sfxVolume <= 0.01) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    try {
+      const sampleRate = ctx.sampleRate;
+      const len = Math.floor(sampleRate * 0.85);
+      const buffer = ctx.createBuffer(1, len, sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        const decay = Math.pow(1 - i / len, 1.8);
+        data[i] = (Math.random() * 2 - 1) * decay;
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(950, ctx.currentTime);
+      filter.frequency.exponentialRampToValueAtTime(140, ctx.currentTime + 0.8);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(Math.max(0.01, this.settings.sfxVolume * 0.38), ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.85);
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      noise.start();
+    } catch {
+      // Ignore if audio buffer unavailable
+    }
+  }
+
   public playFanfare() {
     const notes = [523.25, 659.25, 783.99, 1046.5];
     notes.forEach((n, idx) => {

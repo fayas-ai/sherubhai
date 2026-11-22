@@ -556,11 +556,11 @@ export const VEHICLE_CATALOG: VehicleDef[] = [
 export const AUTO_DESTINATIONS: AutoDestination[] = [
   { id: 'dest_airport', name: 'Kerala Airport & Runway', mlName: 'വിമാനത്താവളം & റൺവേ', x: 0, z: -122 },
   { id: 'dest_hospital', name: 'Kerala General Hospital', mlName: 'ആശുപത്രി (108)', x: 54, z: -34 },
-  { id: 'dest_home', name: 'Sheru Bhai Home', mlName: 'ഷേരുവിന്റെ വീട്', x: 0, z: 36 },
+  { id: 'dest_home', name: 'Sheru Bhai Home', mlName: 'ഷേരുവിന്റെ വീട്', x: -42, z: 34 },
   { id: 'dest_resort', name: 'Coconut Pool & Resort', mlName: 'റിസോർട്ട് & പൂൾ', x: 50, z: 36 },
-  { id: 'dest_bank', name: 'GHOP GHOP Bank', mlName: 'GHOP ബാങ്ക്', x: 0, z: -28 },
+  { id: 'dest_bank', name: 'GHOP GHOP Bank', mlName: 'GHOP ബാങ്ക്', x: -18, z: -32 },
   { id: 'dest_junction', name: 'Main Junction & Bus Stand', mlName: 'മെയിൻ ജംഗ്ഷൻ', x: 0, z: 6 },
   { id: 'dest_showroom', name: 'Turbo Thambi Showroom', mlName: 'കാർ ഷോറൂം', x: -34, z: 12 },
   { id: 'dest_police', name: 'Kerala Police Station', mlName: 'പോലീസ് സ്റ്റേഷൻ', x: -52, z: 18 },
-  { id: 'dest_fire', name: 'Fire & Rescue Station', mlName: 'ഫയർ സ്റ്റേഷൻ', x: -52, z: 4 },
+  { id: 'dest_fire', name: 'Fire & Rescue Station', mlName: 'ഫയർ സ്റ്റേഷൻ', x: 64, z: 34 },
 ];

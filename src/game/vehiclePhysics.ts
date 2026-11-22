@@ -34,6 +34,68 @@ export function isPointOnRunway(x: number, z: number, margin = 4): boolean {
   );
 }
 
+/**
+ * Full safe landing surface at Kerala International Airport:
+ * Runway 09/27 + shoulders + connected concrete Apron & Taxiways.
+ */
+export function isPointOnAirportTarmac(x: number, z: number): boolean {
+  if (isPointOnRunway(x, z, 6)) return true;
+  // Connected Concrete Apron & Taxiways north of Terminal
+  return x >= -54 && x <= 54 && z >= -137 && z <= -118;
+}
+
+/**
+ * Evaluates whether a manual aeroplane touchdown is a safe Airport landing
+ * or an off-runway crash blast (e.g. landing on town roads or streets).
+ */
+export function evaluateAirplaneLanding(
+  x: number,
+  z: number,
+  peakAltitude: number,
+  wasAutoLand: boolean,
+): 'safe_runway' | 'crash_blast' {
+  if (wasAutoLand) return 'safe_runway';
+  if (isPointOnAirportTarmac(x, z)) return 'safe_runway';
+  if (peakAltitude < 2.2) return 'safe_runway';
+  return 'crash_blast';
+}
+
+/**
+ * Mobile Flight Cursor Control:
+ * - Cursor pushed UP (touchMoveY < -0.22): Full throttle + Climb / Fly UP!
+ * - Cursor pulled DOWN (touchMoveY > 0.22): Descend / Land DOWN!
+ * - Cursor LEFT / RIGHT (touchMoveX): Smooth banked turning!
+ */
+export function mapMobileFlightCursor(
+  touchMoveX: number,
+  touchMoveY: number,
+  isAirborne: boolean,
+): { throttle: number; turn: number; climb: boolean; descend: boolean } {
+  const turn = Math.max(-1, Math.min(1, touchMoveX));
+  if (touchMoveY < -0.22) {
+    return {
+      throttle: Math.min(1, Math.max(0.65, -touchMoveY)),
+      turn,
+      climb: true,
+      descend: false,
+    };
+  }
+  if (touchMoveY > 0.22) {
+    return {
+      throttle: isAirborne ? -0.35 : -Math.min(1, touchMoveY),
+      turn,
+      climb: false,
+      descend: true,
+    };
+  }
+  return {
+    throttle: 0,
+    turn,
+    climb: false,
+    descend: false,
+  };
+}
+
 export interface GroundVehiclePhysicsState {
   speed: number;
   yaw: number;

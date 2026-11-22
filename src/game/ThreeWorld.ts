@@ -77,10 +77,14 @@ import {
 } from './models';
 import {
   AIRPORT_RUNWAY,
+  evaluateAirplaneLanding,
   isAircraftType,
+  isPointOnAirportTarmac,
+  mapMobileFlightCursor,
   stepAirplanePhysics,
   stepGroundVehiclePhysics,
 } from './vehiclePhysics';
+import { TOWN_PALM_TREES, TOWN_ROADS, getRoadNameAt } from './roadNetwork';
 import { VehicleModelRig, createDetailedVehicleModel } from './vehicleModels';
 import {
   createGrassTexture,
@@ -95,6 +99,7 @@ const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _mat4 = new THREE.Matrix4();
 const _quat = new THREE.Quaternion();
+const _euler = new THREE.Euler();
 const _scale = new THREE.Vector3();
 const _skyDay = new THREE.Color(0x88ccf1);
 const _skySunset = new THREE.Color(0xf29f67);
@@ -146,6 +151,7 @@ interface LiveVehicle {
   isAircraft: boolean;
   flightState: 'ground' | 'takeoff_ready' | 'airborne';
   autoLanding: boolean;
+  peakAltitude: number;
   hasSiren: boolean;
   sirenOn: boolean;
   rig: VehicleModelRig;
@@ -211,10 +217,12 @@ export interface ThreeWorldCallbacks {
   onPositionSample: (pos: { x: number; y: number; z: number; yaw: number }) => void;
   onRoadEgo: (kind: 'auto' | 'bus') => void;
   onEmergencyIncident: (
-    cause: 'coconut_drop' | 'crossing_hit' | 'pedestrian_bump',
+    cause: 'coconut_drop' | 'crossing_hit' | 'pedestrian_bump' | 'airplane_crash',
     x: number,
     z: number,
+    roadName?: string,
   ) => void;
+  onSafeLanding?: (aircraftName: string) => void;
   onAmbulanceArrived: (ambulanceId: string) => void;
   onHospitalArrived: () => void;
   onVehicleParked: (vehicleId: string, x: number, z: number, yaw: number, bayName?: string) => void;
@@ -284,6 +292,7 @@ export class ThreeWorld {
   private touchMoveX = 0;
   private touchMoveY = 0;
   private touchRunning = false;
+  private touchFlightVertical: -1 | 0 | 1 = 0;
 
   // World entities
   private colliders: AABB[] = [];
@@ -325,26 +334,62 @@ export class ThreeWorld {
   };
 
   private collectibleMeshes = new Map<string, THREE.Group>();
+  private collectibleGems: THREE.Object3D[] = [];
   private roamingGoat: THREE.Group;
   private goatAngle = 0;
   private questBeacon: THREE.Group;
+  private questBeaconArrow: THREE.Object3D | null = null;
   private questTargetCoords: Vec2 | null = null;
   private activeVehicleId: string | null = null;
+
+  // Pooled 3D Crash Blast & Fire Rescue VFX (zero-GC)
+  private blastRig!: {
+    group: THREE.Group;
+    core: THREE.Mesh;
+    coreMat: THREE.MeshBasicMaterial;
+    shell: THREE.Mesh;
+    shellMat: THREE.MeshBasicMaterial;
+    ring: THREE.Mesh;
+    ringMat: THREE.MeshBasicMaterial;
+    scorch: THREE.Mesh;
+    scorchMat: THREE.MeshBasicMaterial;
+  };
+  private blastState = {
+    active: false,
+    x: 0,
+    z: 0,
+    age: 0,
+    duration: 12,
+    smokeTimer: 0,
+    foamTimer: 0,
+  };
+  private fireRescueDispatch = {
+    active: false,
+    arrived: false,
+    targetX: 0,
+    targetZ: 0,
+    fireEngineId: 'veh_fire_engine',
+    timer: 0,
+  };
 
   // Pooled particles (Zero-GC InstancedMesh)
   private particleMesh: THREE.InstancedMesh;
   private particles: ParticleSlot[] = [];
 
-  // Runtime state
+  // Runtime & Lag-Prevention Throttle state
   private mode: GameScreenState = 'title';
   private modalOpen = false;
   private settings: GameSettings;
   private callbacks: ThreeWorldCallbacks;
   private timeOfDay = 0.28;
+  private lastLightingPhase = '';
   private dayCyclePaused = false;
   private elapsed = 0;
   private lastTickTime = 0;
   private hudThrottle = 0;
+  private adOverlayThrottle = 0.25;
+  private hasVisible3DAd = false;
+  private frameCounter = 0;
   private posSaveThrottle = 0;
   private randomEventTimer = 38;
   private lastVisitedBuildingId = '';
@@ -458,18 +503,23 @@ export class ThreeWorld {
 
     // Golden Quest Waypoint Beacon
     this.questBeacon = this.createQuestBeacon();
+    this.questBeaconArrow = this.questBeacon.getObjectByName('beacon_arrow') ?? null;
     this.scene.add(this.questBeacon);
 
-    // Pooled Zero-GC Particle Burst InstancedMesh
-    const pGeo = new THREE.BoxGeometry(0.18, 0.18, 0.18);
+    // Pooled 3D Crash Blast & Fireball VFX Rig (hidden until off-runway crash!)
+    this.blastRig = this.createBlastVfxRig();
+    this.scene.add(this.blastRig.group);
+
+    // Pooled Zero-GC Particle Burst InstancedMesh (120 slots for fire, smoke, foam & celebration bursts)
+    const pGeo = new THREE.BoxGeometry(0.22, 0.22, 0.22);
     const pMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.25,
-      metalness: 0.6,
+      roughness: 0.3,
+      metalness: 0.4,
     });
-    this.particleMesh = new THREE.InstancedMesh(pGeo, pMat, 80);
+    this.particleMesh = new THREE.InstancedMesh(pGeo, pMat, 120);
     this.particleMesh.frustumCulled = false;
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < 120; i++) {
       this.particles.push({
         active: false,
         pos: new THREE.Vector3(),
@@ -535,6 +585,56 @@ export class ThreeWorld {
     return g;
   }
 
+  private createBlastVfxRig() {
+    const group = new THREE.Group();
+    group.visible = false;
+
+    const coreMat = new THREE.MeshBasicMaterial({
+      color: 0xfff3b0,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    });
+    const core = new THREE.Mesh(new THREE.SphereGeometry(2.4, 14, 10), coreMat);
+    core.position.y = 2.0;
+    group.add(core);
+
+    const shellMat = new THREE.MeshBasicMaterial({
+      color: 0xff5a1f,
+      transparent: true,
+      opacity: 0.82,
+      depthWrite: false,
+    });
+    const shell = new THREE.Mesh(new THREE.SphereGeometry(3.8, 14, 10), shellMat);
+    shell.position.y = 2.2;
+    group.add(shell);
+
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xf97316,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(1.5, 3.2, 24), ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.22;
+    group.add(ring);
+
+    const scorchMat = new THREE.MeshBasicMaterial({
+      color: 0x18181b,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+    });
+    const scorch = new THREE.Mesh(new THREE.CircleGeometry(5.8, 22), scorchMat);
+    scorch.rotation.x = -Math.PI / 2;
+    scorch.position.y = 0.09;
+    group.add(scorch);
+
+    return { group, core, coreMat, shell, shellMat, ring, ringMat, scorch, scorchMat };
+  }
+
   private buildEnvironment(initialProgress: GameProgressState) {
     // Extended Kerala lush ground plane + distant tropical backwaters ring (no floating void wall!)
     const grassTex = createGrassTexture(this.maxAnisotropy);
@@ -568,9 +668,9 @@ export class ThreeWorld {
     this.airportRig = createAirportComplexModel(this.maxAnisotropy);
     this.scene.add(this.airportRig.group);
 
-    // Extended Crossroads Roads (offset y = 0.025 to prevent any Z-fighting!)
+    // All 11 Paved Town Roads generated cleanly from TOWN_ROADS (zero shop/tree overlap!)
     const roadTexNS = createRoadTexture(this.maxAnisotropy);
-    roadTexNS.repeat.set(1, 26);
+    roadTexNS.repeat.set(1, 22);
     const roadMatNS = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: roadTexNS,
@@ -579,14 +679,9 @@ export class ThreeWorld {
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    const mainRoadNS = new THREE.Mesh(new THREE.PlaneGeometry(11, 305), roadMatNS);
-    mainRoadNS.rotation.x = -Math.PI / 2;
-    mainRoadNS.position.set(0, 0.025, 10);
-    mainRoadNS.receiveShadow = true;
-    this.scene.add(mainRoadNS);
 
     const roadTexEW = createRoadTexture(this.maxAnisotropy);
-    roadTexEW.repeat.set(1, 26);
+    roadTexEW.repeat.set(1, 24);
     const roadMatEW = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: roadTexEW,
@@ -595,67 +690,18 @@ export class ThreeWorld {
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    const mainRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(11, 305), roadMatEW);
-    mainRoadEW.rotation.x = -Math.PI / 2;
-    mainRoadEW.rotation.z = Math.PI / 2;
-    mainRoadEW.position.set(0, 0.032, -4);
-    mainRoadEW.receiveShadow = true;
-    this.scene.add(mainRoadEW);
 
-    // Secondary North Market/Hospital Avenue
-    const northRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 224), roadMatEW);
-    northRoadEW.rotation.x = -Math.PI / 2;
-    northRoadEW.rotation.z = Math.PI / 2;
-    northRoadEW.position.set(0, 0.03, -32);
-    northRoadEW.receiveShadow = true;
-    this.scene.add(northRoadEW);
-
-    // Extended Town Ring Roads: West Cinema Strip, East Promenade, & South Coastal Blvd
-    const westRingNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 185), roadMatNS);
-    westRingNS.rotation.x = -Math.PI / 2;
-    westRingNS.position.set(-76, 0.027, 4);
-    westRingNS.receiveShadow = true;
-    this.scene.add(westRingNS);
-
-    const eastRingNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 185), roadMatNS);
-    eastRingNS.rotation.x = -Math.PI / 2;
-    eastRingNS.position.set(76, 0.027, 4);
-    eastRingNS.receiveShadow = true;
-    this.scene.add(eastRingNS);
-
-    const southCoastalEW = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 226), roadMatEW);
-    southCoastalEW.rotation.x = -Math.PI / 2;
-    southCoastalEW.rotation.z = Math.PI / 2;
-    southCoastalEW.position.set(0, 0.028, 72);
-    southCoastalEW.receiveShadow = true;
-    this.scene.add(southCoastalEW);
-
-    // Grand Expansion II Outer Boulevards: North InfoPark, Far West Turf, Far East Harbour, Marine Drive
-    const northHighwayEW = new THREE.Mesh(new THREE.PlaneGeometry(10, 236), roadMatEW);
-    northHighwayEW.rotation.x = -Math.PI / 2;
-    northHighwayEW.rotation.z = Math.PI / 2;
-    northHighwayEW.position.set(0, 0.029, -72);
-    northHighwayEW.receiveShadow = true;
-    this.scene.add(northHighwayEW);
-
-    const farWestNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 196), roadMatNS);
-    farWestNS.rotation.x = -Math.PI / 2;
-    farWestNS.position.set(-108, 0.026, 6);
-    farWestNS.receiveShadow = true;
-    this.scene.add(farWestNS);
-
-    const farEastNS = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 196), roadMatNS);
-    farEastNS.rotation.x = -Math.PI / 2;
-    farEastNS.position.set(108, 0.026, 6);
-    farEastNS.receiveShadow = true;
-    this.scene.add(farEastNS);
-
-    const marineDriveEW = new THREE.Mesh(new THREE.PlaneGeometry(9.5, 226), roadMatEW);
-    marineDriveEW.rotation.x = -Math.PI / 2;
-    marineDriveEW.rotation.z = Math.PI / 2;
-    marineDriveEW.position.set(0, 0.027, 104);
-    marineDriveEW.receiveShadow = true;
-    this.scene.add(marineDriveEW);
+    for (const seg of TOWN_ROADS) {
+      const roadMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(seg.width, seg.length),
+        seg.axis === 'ns' ? roadMatNS : roadMatEW,
+      );
+      roadMesh.rotation.x = -Math.PI / 2;
+      if (seg.axis === 'ew') roadMesh.rotation.z = Math.PI / 2;
+      roadMesh.position.set(seg.x, seg.yOffset, seg.z);
+      roadMesh.receiveShadow = true;
+      this.scene.add(roadMesh);
+    }
 
     // Central Town Junction Plaza Circle
     const plaza = new THREE.Mesh(
@@ -751,14 +797,6 @@ export class ThreeWorld {
       }
     });
 
-    // Secondary South Resort & Home Road (extended to connect West & East Rings)
-    const southRoadEW = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 196), roadMatEW);
-    southRoadEW.rotation.x = -Math.PI / 2;
-    southRoadEW.rotation.z = Math.PI / 2;
-    southRoadEW.position.set(0, 0.029, 34);
-    southRoadEW.receiveShadow = true;
-    this.scene.add(southRoadEW);
-
     // Freestanding 300×250 3D Town Ads Boards (press E to view live 300×250 Ad)
     for (const board of AD_BOARDS) {
       this.scene.add(createAdBoard300x250Model(board, this.maxAnisotropy));
@@ -793,40 +831,8 @@ export class ThreeWorld {
       { rig: tl4, axis: 'ew' },
     );
 
-    // Interactive Coconut Palms lining town lanes (bump trunks or walk under to shake & drop coconuts!)
-    const innerPalms: [number, number, number][] = [
-      [-8.5, 13.0, 8.6],
-      [8.5, 13.0, 8.8],
-      [-10, -24, 9.2],
-      [10, -24, 10.1],
-      [-26, -24, 9.6],
-      [26, -24, 9.0],
-      [-26, 14, 10.5],
-      [26, 14, 9.4],
-      [-10, 28, 9.8],
-      [10, 28, 10.3],
-      [-48, -28, 11.0],
-      [50, -30, 10.2],
-      [-52, 4, 9.5],
-      [52, 4, 9.8],
-      [-36, 36, 10.0],
-      [36, 36, 9.2],
-      [8, 18, 9.6],
-      [-8, 18, 9.8],
-      [-68, -28, 10.2],
-      [68, 28, 9.8],
-      [-54, 66, 10.4],
-      [54, 66, 10.0],
-      [-28, -66, 10.2],
-      [28, -66, 10.5],
-      [-100, -40, 10.4],
-      [100, -40, 9.9],
-      [-100, 42, 10.2],
-      [100, 42, 10.0],
-      [-32, 98, 10.6],
-      [32, 98, 10.4],
-    ];
-    innerPalms.forEach(([px, pz, ph], idx) => {
+    // Interactive Coconut Palms strictly on sidewalks & lawns (100% clear of all roads!)
+    TOWN_PALM_TREES.forEach(([px, pz, ph], idx) => {
       const rig = createCoconutPalmRig(ph, 1.1);
       rig.root.position.set(px, 0, pz);
       rig.root.rotation.y = Math.atan2(px, pz) + 0.4;
@@ -914,9 +920,9 @@ export class ThreeWorld {
       this.scene.add(bench);
     }
 
-    // Fictional Comedy Billboard overlooking Main Junction
+    // Fictional Comedy Billboard cleanly off northRoadEW overlooking Main Junction lawn
     const billGroup = new THREE.Group();
-    billGroup.position.set(-22, 0, -32);
+    billGroup.position.set(-24, 0, -22.5);
     billGroup.rotation.y = 0.35;
     const post1 = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 7, 8), legMat);
     post1.position.set(-2.5, 3.5, 0);
@@ -989,6 +995,7 @@ export class ThreeWorld {
         isAircraft: Boolean(v.isAircraft || isAircraftType(v.type)),
         flightState: 'ground',
         autoLanding: false,
+        peakAltitude: 0,
         hasSiren: Boolean(v.hasSiren || rig.hasSiren),
         sirenOn: false,
         rig,
@@ -999,11 +1006,13 @@ export class ThreeWorld {
     // Spawn Living Kerala Road Traffic (14 lightweight compact vehicles, capped by Graphics Quality!)
     this.buildRoadTraffic();
 
-    // Spawn World Collectibles
+    // Spawn World Collectibles (cache spin_gem children once for zero per-frame traversal!)
     for (const c of WORLD_COLLECTIBLES) {
       const mesh = createCollectibleModel(c);
       mesh.visible = !initialProgress.collectedWorldIds.includes(c.id);
       this.collectibleMeshes.set(c.id, mesh);
+      const gem = mesh.getObjectByName('spin_gem');
+      if (gem) this.collectibleGems.push(gem);
       this.scene.add(mesh);
     }
 
@@ -1302,13 +1311,24 @@ export class ThreeWorld {
       this.renderer.setPixelRatio(1);
       this.renderer.shadowMap.enabled = false;
     } else if (q === 'medium') {
+      // Lossless high-FPS cap: 1.25x DPR & 512px shadow map eliminates HiDPI lag while staying razor-sharp!
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFShadowMap;
+      if (this.sunLight) {
+        this.sunLight.shadow.mapSize.set(512, 512);
+        this.sunLight.shadow.map?.dispose();
+        this.sunLight.shadow.map = null;
+      }
+    } else {
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
       this.renderer.shadowMap.enabled = true;
       this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    } else {
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      if (this.sunLight) {
+        this.sunLight.shadow.mapSize.set(1024, 1024);
+        this.sunLight.shadow.map?.dispose();
+        this.sunLight.shadow.map = null;
+      }
     }
   }
 
@@ -1353,6 +1373,7 @@ export class ThreeWorld {
         isAircraft: aircraft,
         flightState: 'ground',
         autoLanding: false,
+        peakAltitude: 0,
         hasSiren: Boolean(def.hasSiren || rig.hasSiren),
         sirenOn: false,
         rig,
@@ -1370,6 +1391,8 @@ export class ThreeWorld {
       existing.steerInput = 0;
       existing.flightState = 'ground';
       existing.autoLanding = false;
+      existing.peakAltitude = 0;
+      existing.mesh.visible = true;
       existing.mesh.position.set(existing.x, 0, existing.z);
       existing.mesh.rotation.y = existing.yaw;
       if (existing.rig.bodyPivot) existing.rig.bodyPivot.rotation.set(0, 0, 0);
@@ -1541,6 +1564,7 @@ export class ThreeWorld {
         isAircraft: false,
         flightState: 'ground',
         autoLanding: false,
+        peakAltitude: 0,
         hasSiren: true,
         sirenOn: true,
         rig,
@@ -1735,6 +1759,143 @@ export class ThreeWorld {
     this.touchMoveX = moveX;
     this.touchMoveY = moveY;
     this.touchRunning = running;
+  }
+
+  public setTouchFlightVertical(dir: -1 | 0 | 1) {
+    this.touchFlightVertical = dir;
+  }
+
+  private dispatchFireRescueEngine(targetX: number, targetZ: number) {
+    const fireDef = VEHICLE_CATALOG.find((v) => v.id === 'veh_fire_engine') ?? VEHICLE_CATALOG[0];
+    let engine = this.liveVehicles.find((v) => v.id === 'veh_fire_engine');
+    if (!engine) {
+      const rig = createDetailedVehicleModel({ ...fireDef, x: targetX - 18, z: targetZ });
+      this.scene.add(rig.root);
+      engine = {
+        id: fireDef.id,
+        name: fireDef.name,
+        type: fireDef.type,
+        x: targetX - 18,
+        y: 0,
+        z: targetZ,
+        yaw: 0,
+        pitch: 0,
+        roll: 0,
+        speed: 0,
+        maxSpeed: fireDef.maxSpeed,
+        steerAngle: 0,
+        steerInput: 0,
+        isAircraft: false,
+        flightState: 'ground',
+        autoLanding: false,
+        peakAltitude: 0,
+        hasSiren: true,
+        sirenOn: true,
+        rig,
+        mesh: rig.root,
+      };
+      this.liveVehicles.push(engine);
+    }
+
+    const candidates = [
+      { x: targetX - 18, z: targetZ + 2 },
+      { x: targetX + 18, z: targetZ - 2 },
+      { x: targetX, z: targetZ + 18 },
+      { x: targetX, z: targetZ - 18 },
+    ];
+    let chosen = candidates[0];
+    for (const c of candidates) {
+      const check = resolveCircleWorldCollision(c.x, c.z, 2.0, this.colliders);
+      if (!check.collided) {
+        chosen = c;
+        break;
+      }
+    }
+    const safe = resolveCircleWorldCollision(chosen.x, chosen.z, 2.0, this.colliders);
+    engine.x = safe.x;
+    engine.z = safe.z;
+    engine.yaw = Math.atan2(targetX - engine.x, targetZ - engine.z);
+    engine.mesh.position.set(engine.x, 0, engine.z);
+    engine.mesh.rotation.y = engine.yaw;
+    engine.sirenOn = true;
+
+    this.fireRescueDispatch = {
+      active: true,
+      arrived: false,
+      targetX,
+      targetZ,
+      fireEngineId: engine.id,
+      timer: 0,
+    };
+  }
+
+  private triggerAirplaneCrashBlast(veh: LiveVehicle, crashX: number, crashZ: number) {
+    // BOOM!! Manual off-runway crash blast VFX + sound + Fire Engine + 108 Ambulance rescue!
+    soundEngine.playPlaneBlast();
+    this.camShakeTrauma = 1.0;
+
+    // Activate 3D Fireball + Shockwave Ring + Scorch Disc right at crash site!
+    this.blastState = {
+      active: true,
+      x: crashX,
+      z: crashZ,
+      age: 0,
+      duration: 13,
+      smokeTimer: 0,
+      foamTimer: 0,
+    };
+    this.blastRig.group.position.set(crashX, 0, crashZ);
+    this.blastRig.group.visible = true;
+    this.blastRig.core.scale.setScalar(0.6);
+    this.blastRig.shell.scale.setScalar(0.8);
+    this.blastRig.ring.scale.setScalar(0.6);
+    this.blastRig.coreMat.opacity = 0.96;
+    this.blastRig.shellMat.opacity = 0.85;
+    this.blastRig.ringMat.opacity = 0.9;
+    this.blastRig.scorchMat.opacity = 0.88;
+
+    // Massive fiery explosion particle bursts (orange flame, bright yellow flash, dark smoke debris)
+    this.spawnParticleBurst(crashX, 1.4, crashZ, 30, 0xff5a1f);
+    this.spawnParticleBurst(crashX, 2.4, crashZ, 24, 0xfacc15);
+    this.spawnParticleBurst(crashX, 3.0, crashZ, 22, 0x374151);
+
+    // Park damaged plane cleanly back at Runway 09 so it's ready after hospital recovery
+    veh.x = AIRPORT_RUNWAY.takeoffStartX;
+    veh.y = 0;
+    veh.z = AIRPORT_RUNWAY.takeoffStartZ;
+    veh.yaw = AIRPORT_RUNWAY.takeoffYaw;
+    veh.pitch = 0;
+    veh.roll = 0;
+    veh.speed = 0;
+    veh.peakAltitude = 0;
+    veh.flightState = 'ground';
+    veh.autoLanding = false;
+    veh.mesh.position.set(veh.x, 0, veh.z);
+    veh.mesh.rotation.y = veh.yaw;
+    if (veh.rig.bodyPivot) veh.rig.bodyPivot.rotation.set(0, 0, 0);
+
+    // Eject Sheru Bhai safely nearby facing the smoking blast & rushing rescue vehicles!
+    this.activeVehicleId = null;
+    this.autopilotDest = null;
+    this.sheru.root.visible = true;
+    const ejectSafe = resolveCircleWorldCollision(crashX + 5.6, crashZ + 4.8, 0.9, this.colliders);
+    this.playerX = ejectSafe.x;
+    this.playerY = 0;
+    this.playerZ = ejectSafe.z;
+    this.playerYaw = Math.atan2(crashX - this.playerX, crashZ - this.playerZ);
+    this.camYaw = this.playerYaw;
+    this.camPitch = 0.24;
+    this.sheru.root.position.set(this.playerX, 0, this.playerZ);
+    this.sheru.root.rotation.y = this.playerYaw;
+    this.snapCameraImmediate();
+
+    // Auto-dispatch BOTH 108 Ambulance & Kerala Fire & Rescue Engine!
+    this.dispatchEmergencyAmbulance(crashX, crashZ);
+    this.dispatchFireRescueEngine(crashX, crashZ);
+
+    const roadName = getRoadNameAt(crashX, crashZ, 4.5) ?? getDistrictAt(crashX, crashZ);
+    this.callbacks.onEmergencyIncident('airplane_crash', crashX, crashZ, roadName);
+    this.hudThrottle = 1;
   }
 
   public rotateCameraDelta(dx: number, dy: number) {
@@ -2100,11 +2261,14 @@ export class ThreeWorld {
       this.scene.fog.color.copy(this.scene.background as THREE.Color);
     }
 
-    const nightGlow = phase === 'night' ? 1.8 : phase === 'sunset' ? 0.7 : 0.12;
-    const pointIntensity = phase === 'night' ? 18 : phase === 'sunset' ? 6 : 0;
-    for (const m of this.lampBulbMats) m.emissiveIntensity = nightGlow;
-    for (const m of this.windowMats) m.emissiveIntensity = phase === 'night' ? 0.95 : 0.14;
-    for (const pl of this.nightLights) pl.intensity = pointIntensity;
+    if (phase !== this.lastLightingPhase) {
+      this.lastLightingPhase = phase;
+      const nightGlow = phase === 'night' ? 1.8 : phase === 'sunset' ? 0.7 : 0.12;
+      const pointIntensity = phase === 'night' ? 18 : phase === 'sunset' ? 6 : 0;
+      for (const m of this.lampBulbMats) m.emissiveIntensity = nightGlow;
+      for (const m of this.windowMats) m.emissiveIntensity = phase === 'night' ? 0.95 : 0.14;
+      for (const pl of this.nightLights) pl.intensity = pointIntensity;
+    }
   }
 
   private updatePlayerAndVehicles(dt: number) {
@@ -2135,18 +2299,39 @@ export class ThreeWorld {
       if (veh) {
         if (veh.isAircraft) {
           // =====================================================================
-          // EASY ARCADE AEROPLANE FLIGHT (Runway Takeoff, Banked Turns, Auto-Land)
+          // EASY ARCADE AEROPLANE FLIGHT (Runway Takeoff, Mobile UP=Fly / DOWN=Land Cursor, Off-Runway Blast!)
           // =====================================================================
-          const climbKey = this.keysHeld.has('Space');
+          const mobileCursor = mapMobileFlightCursor(
+            this.touchMoveX,
+            this.touchMoveY,
+            veh.y > 0.35,
+          );
+          const usingMobileStick =
+            Math.abs(this.touchMoveY) > 0.22 || Math.abs(this.touchMoveX) > 0.15;
+          const climbKey =
+            this.keysHeld.has('Space') ||
+            this.touchFlightVertical === 1 ||
+            (usingMobileStick && mobileCursor.climb);
           const descendKey =
-            running || this.keysHeld.has('KeyC') || this.keysHeld.has('KeyQ');
+            running ||
+            this.keysHeld.has('KeyC') ||
+            this.keysHeld.has('KeyQ') ||
+            this.touchFlightVertical === -1 ||
+            (usingMobileStick && mobileCursor.descend);
+          const throttleInput = usingMobileStick ? mobileCursor.throttle : forward;
+          const turnInput = usingMobileStick ? mobileCursor.turn : strafe;
+
           if (
             veh.autoLanding &&
-            (Math.abs(forward) > 0.1 || Math.abs(strafe) > 0.1 || climbKey)
+            (Math.abs(throttleInput) > 0.15 ||
+              Math.abs(turnInput) > 0.15 ||
+              climbKey ||
+              descendKey)
           ) {
             veh.autoLanding = false;
           }
 
+          const wasAutoLand = veh.autoLanding;
           const planeRes = stepAirplanePhysics(
             {
               x: veh.x,
@@ -2160,8 +2345,8 @@ export class ThreeWorld {
               steerInput: veh.steerInput,
             },
             {
-              throttle: forward,
-              turn: strafe,
+              throttle: throttleInput,
+              turn: turnInput,
               climb: climbKey,
               descend: descendKey,
               autoLand: veh.autoLanding,
@@ -2170,10 +2355,16 @@ export class ThreeWorld {
             WORLD_RADIUS + 80,
           );
 
+          // Track highest flight altitude so we know this was a real airborne flight
+          if (planeRes.y > veh.peakAltitude) {
+            veh.peakAltitude = planeRes.y;
+          }
+
           // Ground-only soft building collision (when airborne > 2.2m, fly cleanly over everything!)
           let finalX = planeRes.x;
           let finalZ = planeRes.z;
           let finalSpeed = planeRes.speed;
+          let hitBuildingLow = false;
           if (planeRes.y < 2.2) {
             const gRes = resolveCircleWorldCollision(
               finalX,
@@ -2183,15 +2374,30 @@ export class ThreeWorld {
               WORLD_RADIUS + 20,
             );
             if (gRes.collided) {
+              hitBuildingLow = veh.peakAltitude >= 2.2 && !wasAutoLand;
               finalX = gRes.x;
               finalZ = gRes.z;
               finalSpeed *= 0.65;
             }
           }
 
-          if (planeRes.touchedDown) {
+          if (planeRes.touchedDown || hitBuildingLow) {
+            const landingOutcome = evaluateAirplaneLanding(
+              finalX,
+              finalZ,
+              veh.peakAltitude,
+              wasAutoLand,
+            );
+            if (landingOutcome === 'crash_blast') {
+              this.triggerAirplaneCrashBlast(veh, finalX, finalZ);
+              return;
+            }
             veh.autoLanding = false;
+            veh.peakAltitude = 0;
             this.spawnParticleBurst(finalX, 0.4, finalZ, 12, 0xe2e8f0);
+            if (planeRes.touchedDown) {
+              this.callbacks.onSafeLanding?.(veh.name);
+            }
           }
 
           veh.x = finalX;
@@ -2716,6 +2922,10 @@ export class ThreeWorld {
         }
       }
 
+      const dxp = palm.x - this.playerX;
+      const dzp = palm.z - this.playerZ;
+      if (!palm.shaking && dxp * dxp + dzp * dzp > 58 * 58) continue;
+
       const breezeX = Math.sin(this.elapsed * 1.35 + palm.phaseOffset) * 0.022;
       const breezeZ = Math.cos(this.elapsed * 1.15 + palm.phaseOffset) * 0.018;
 
@@ -2879,6 +3089,92 @@ export class ThreeWorld {
           amb.mesh.rotation.y = amb.yaw;
           for (const w of amb.rig.wheels) w.rotation.x += amb.speed * dt * 2.2;
         }
+      }
+    }
+
+    // 4B. Animate 3D Airplane Crash Blast Fireball, Shockwave, Smoke & Kerala Fire Rescue Engine!
+    if (this.blastState.active) {
+      this.blastState.age += dt;
+      const t = this.blastState.age;
+      if (t < 1.15) {
+        const k = t / 1.15;
+        this.blastRig.core.visible = true;
+        this.blastRig.shell.visible = true;
+        this.blastRig.ring.visible = true;
+        this.blastRig.core.scale.setScalar(0.8 + k * 3.1);
+        this.blastRig.shell.scale.setScalar(1.0 + k * 4.0);
+        this.blastRig.ring.scale.setScalar(0.8 + k * 5.2);
+        this.blastRig.coreMat.opacity = Math.max(0, 0.95 * (1 - k));
+        this.blastRig.shellMat.opacity = Math.max(0, 0.85 * (1 - k));
+        this.blastRig.ringMat.opacity = Math.max(0, 0.9 * (1 - k));
+      } else {
+        this.blastRig.core.visible = false;
+        this.blastRig.shell.visible = false;
+        this.blastRig.ring.visible = false;
+      }
+
+      this.blastState.smokeTimer += dt;
+      if (t < 8.5 && this.blastState.smokeTimer >= 0.24) {
+        this.blastState.smokeTimer = 0;
+        const hex = t < 3.5 ? 0xf97316 : 0x374151;
+        this.spawnParticleBurst(this.blastState.x, 0.8, this.blastState.z, 5, hex);
+      }
+
+      const fadeStart = this.blastState.duration - 2.5;
+      if (t > fadeStart) {
+        this.blastRig.scorchMat.opacity = Math.max(
+          0,
+          0.88 * (1 - (t - fadeStart) / 2.5),
+        );
+      }
+      if (t >= this.blastState.duration) {
+        this.blastState.active = false;
+        this.blastRig.group.visible = false;
+      }
+    }
+
+    if (this.fireRescueDispatch.active) {
+      const fe = this.liveVehicles.find((v) => v.id === this.fireRescueDispatch.fireEngineId);
+      if (fe) {
+        this.fireRescueDispatch.timer += dt;
+        const dx = this.fireRescueDispatch.targetX - fe.x;
+        const dz = this.fireRescueDispatch.targetZ - fe.z;
+        const dist = Math.hypot(dx, dz);
+        if (!this.fireRescueDispatch.arrived) {
+          if (dist <= 7.2) {
+            fe.speed = 0;
+            this.fireRescueDispatch.arrived = true;
+          } else {
+            const targetYaw = Math.atan2(dx, dz);
+            const diff = Math.atan2(Math.sin(targetYaw - fe.yaw), Math.cos(targetYaw - fe.yaw));
+            fe.yaw += THREE.MathUtils.clamp(diff, -4.8 * dt, 4.8 * dt);
+            fe.speed = Math.min(24, Math.max(12, dist * 1.8));
+            fe.x += Math.sin(fe.yaw) * fe.speed * dt;
+            fe.z += Math.cos(fe.yaw) * fe.speed * dt;
+            fe.mesh.position.set(fe.x, 0, fe.z);
+            fe.mesh.rotation.y = fe.yaw;
+            for (const w of fe.rig.wheels) w.rotation.x += fe.speed * dt * 2.2;
+          }
+        } else {
+          // Spray cooling white fire-rescue foam onto the blast site!
+          this.blastState.foamTimer += dt;
+          if (this.blastState.foamTimer >= 0.22 && this.fireRescueDispatch.timer < 11) {
+            this.blastState.foamTimer = 0;
+            this.spawnParticleBurst(
+              this.fireRescueDispatch.targetX,
+              1.1,
+              this.fireRescueDispatch.targetZ,
+              6,
+              0xe0f2fe,
+            );
+          }
+          if (this.fireRescueDispatch.timer >= 12) {
+            fe.sirenOn = false;
+            this.fireRescueDispatch.active = false;
+          }
+        }
+      } else {
+        this.fireRescueDispatch.active = false;
       }
     }
 
@@ -3064,23 +3360,17 @@ export class ThreeWorld {
     this.roamingGoat.position.set(gx, Math.abs(Math.sin(this.elapsed * 8)) * 0.14, gz);
     this.roamingGoat.rotation.y = -this.goatAngle;
 
-    // Spin visible collectibles
-    for (const mesh of this.collectibleMeshes.values()) {
-      if (!mesh.visible) continue;
-      const gem = mesh.getObjectByName('spin_gem');
-      if (gem) {
-        gem.rotation.y += dt * 2.2;
-        gem.position.y = 1.2 + Math.sin(this.elapsed * 3.5) * 0.22;
-      }
+    // Spin visible collectibles (using cached gem refs — zero getObjectByName per frame!)
+    for (const gem of this.collectibleGems) {
+      if (!gem.parent?.visible) continue;
+      gem.rotation.y += dt * 2.2;
+      gem.position.y = 1.2 + Math.sin(this.elapsed * 3.5) * 0.22;
     }
 
-    // Animate quest beacon arrow bob
-    if (this.questBeacon.visible) {
-      const arrow = this.questBeacon.getObjectByName('beacon_arrow');
-      if (arrow) {
-        arrow.rotation.y += dt * 2.0;
-        arrow.position.y = 7.2 + Math.sin(this.elapsed * 3.8) * 0.55;
-      }
+    // Animate quest beacon arrow bob (using cached ref)
+    if (this.questBeacon.visible && this.questBeaconArrow) {
+      this.questBeaconArrow.rotation.y += dt * 2.0;
+      this.questBeaconArrow.position.y = 7.2 + Math.sin(this.elapsed * 3.8) * 0.55;
     }
 
     // Animate newly constructed 3D Sheru shops popping up!
@@ -3104,7 +3394,7 @@ export class ThreeWorld {
       this.airportRig.runwayLightMat.emissiveIntensity = 0.9 + Math.sin(this.elapsed * 2.0) * 0.45;
     }
 
-    // Update pooled particles
+    // Update pooled particles (zero-GC _euler + skip GPU upload when idle!)
     let anyActive = false;
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
@@ -3121,7 +3411,8 @@ export class ThreeWorld {
       p.pos.addScaledVector(p.vel, dt);
       const s = 1 - p.life / p.maxLife;
       _scale.set(s, s, s);
-      _quat.setFromEuler(new THREE.Euler(p.life * 6, p.life * 4, 0));
+      _euler.set(p.life * 6, p.life * 4, 0);
+      _quat.setFromEuler(_euler);
       _mat4.compose(p.pos, _quat, _scale);
       this.particleMesh.setMatrixAt(i, _mat4);
     }
@@ -3213,7 +3504,7 @@ export class ThreeWorld {
 
   private emitHudIfDue(dt: number) {
     this.hudThrottle += dt;
-    if (this.hudThrottle < 0.12) return; // <= 8.3 Hz throttled HUD updates
+    if (this.hudThrottle < 0.14) return; // ~7 Hz lean HUD updates for smooth FPS
     this.hudThrottle = 0;
 
     const activeVeh = this.activeVehicleId
@@ -3221,6 +3512,13 @@ export class ThreeWorld {
       : null;
 
     const speedVal = activeVeh ? Math.abs(activeVeh.speed) : 0;
+    const offRunwayWarning = Boolean(
+      activeVeh?.isAircraft &&
+        activeVeh.y >= 1.5 &&
+        activeVeh.y <= 18 &&
+        !activeVeh.autoLanding &&
+        !isPointOnAirportTarmac(activeVeh.x, activeVeh.z),
+    );
     this.callbacks.onHudUpdate({
       playerX: this.playerX,
       playerZ: this.playerZ,
@@ -3237,6 +3535,7 @@ export class ThreeWorld {
       inVehicleIsAircraft: activeVeh?.isAircraft ?? false,
       altitude: activeVeh?.isAircraft ? Math.round(activeVeh.y) : 0,
       flightState: activeVeh?.isAircraft ? activeVeh.flightState : undefined,
+      offRunwayWarning,
       inVehicleHasSiren: activeVeh?.hasSiren ?? false,
       sirenActive: activeVeh?.sirenOn ?? false,
       autopilotDestName: activeVeh?.autoLanding
@@ -3341,21 +3640,30 @@ export class ThreeWorld {
     }
   }
 
-  private update3DAdOverlays() {
-    const showLayer = this.mode === 'playing' && !this.modalOpen && !this.inHospital;
+  private update3DAdOverlays(dt: number) {
+    const showLayer =
+      this.mode === 'playing' && !this.modalOpen && !this.inHospital && this.playerY < 8;
     this.cssRenderer.domElement.style.visibility = showLayer ? 'visible' : 'hidden';
 
     if (!showLayer) {
-      for (const s of this.adBoardPool) {
-        s.obj.visible = false;
-        s.el.style.pointerEvents = 'none';
-      }
-      for (const s of this.adBannerPool) {
-        s.obj.visible = false;
-        s.el.style.pointerEvents = 'none';
+      if (this.hasVisible3DAd) {
+        for (const s of this.adBoardPool) {
+          s.obj.visible = false;
+          s.el.style.pointerEvents = 'none';
+        }
+        for (const s of this.adBannerPool) {
+          s.obj.visible = false;
+          s.el.style.pointerEvents = 'none';
+        }
+        this.hasVisible3DAd = false;
       }
       return;
     }
+
+    // Throttle expensive surface occlusion raychecks to 4 Hz (huge FPS boost!)
+    this.adOverlayThrottle += dt;
+    if (this.adOverlayThrottle < 0.25) return;
+    this.adOverlayThrottle = 0;
 
     this.camera.getWorldDirection(_v1);
     const fwdLen = Math.hypot(_v1.x, _v1.z) || 1;
@@ -3364,6 +3672,7 @@ export class ThreeWorld {
     const camX = this.camera.position.x;
     const camZ = this.camera.position.z;
 
+    let visibleCount = 0;
     const assignedBoards = assignPooled3DAdSurfaces(
       camX,
       camZ,
@@ -3386,6 +3695,7 @@ export class ThreeWorld {
         slot.el.style.pointerEvents = 'none';
         continue;
       }
+      visibleCount++;
       slot.assignedSurfaceId = surf.id;
       slot.obj.position.set(surf.x, surf.y, surf.z);
       slot.obj.rotation.set(0, surf.rotY, 0);
@@ -3417,6 +3727,7 @@ export class ThreeWorld {
         slot.el.style.pointerEvents = 'none';
         continue;
       }
+      visibleCount++;
       slot.assignedSurfaceId = surf.id;
       slot.obj.position.set(surf.x, surf.y, surf.z);
       slot.obj.rotation.set(0, surf.rotY, 0);
@@ -3425,6 +3736,7 @@ export class ThreeWorld {
       slot.el.style.pointerEvents = 'auto';
       slot.el.dataset.surfaceId = surf.id;
     }
+    this.hasVisible3DAd = visibleCount > 0;
   }
 
   private afterDraw(cb: () => void) {
@@ -3451,6 +3763,7 @@ export class ThreeWorld {
     this.lastTickTime = now;
     const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
     this.elapsed += dt;
+    this.frameCounter++;
 
     this.updateLighting(dt);
     this.updatePlayerAndVehicles(dt);
@@ -3458,12 +3771,15 @@ export class ThreeWorld {
     this.updateHospitalInterior(dt);
     this.updateNpcsAndAmbient(dt);
     this.updateCamera(dt);
-    this.update3DAdOverlays();
+    this.update3DAdOverlays(dt);
     this.emitHudIfDue(dt);
 
     this.renderer.render(this.scene, this.camera);
-    this.cssRenderer.render(this.cssScene, this.camera);
-    this.hydrateMounted3DAdIframes();
+    // Only project CSS3D DOM matrices when an ad surface is visible (every 2nd frame for smooth FPS!)
+    if (this.hasVisible3DAd && (this.frameCounter & 1) === 0) {
+      this.cssRenderer.render(this.cssScene, this.camera);
+      this.hydrateMounted3DAdIframes();
+    }
 
     if (this.isSoftwareGl) {
       this.afterDraw(this.tick);

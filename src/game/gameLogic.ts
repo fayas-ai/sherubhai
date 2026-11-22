@@ -1744,23 +1744,28 @@ export function recordVehicleParked(
 
 export function resolveHospitalTreatment(
   state: GameProgressState,
-  cause: 'coconut_drop' | 'crossing_hit' | 'pedestrian_bump' | 'manual_call',
+  cause: 'coconut_drop' | 'crossing_hit' | 'pedestrian_bump' | 'manual_call' | 'airplane_crash',
 ): { state: GameProgressState; mlDoctorLine: string; enDoctorLine: string } {
   const lines =
-    cause === 'coconut_drop'
+    cause === 'airplane_crash'
       ? {
-          ml: 'ഡോക്ടർ: "അയ്യോ ഷേരു ഭായ്! തേങ്ങ വീണത് തലയ്ക്കല്ലേ? തേങ്ങയാണ് പൊട്ടിയത്! രണ്ട് പൊറോട്ടയും ബീഫും കഴിച്ചാൽ ഉഷാറാകും!"',
-          en: 'Dr. Menon: "A coconut fell on your head, Sheru Bhai?! The coconut cracked, not you! Two Porotta & Beef and you are 100% fit!"',
+          ml: 'ഡോക്ടർ: "അയ്യോ ക്യാപ്റ്റൻ ഷേരു ഭായ്! ടൗൺ റോഡിൽ വിമാനം ഇറക്കിയോ?! ഫയർ ഫോഴ്‌സും 108 ആംബുലൻസും രക്ഷിച്ചു — ഇനി റൺവേ 09/27-ൽ മാത്രം ലാൻഡ് ചെയ്യണേ!"',
+          en: 'Dr. Menon: "Captain Sheru Bhai! You landed a jet on a town road?! Fire & Rescue put out the blast and 108 Ambulance saved you — next time land on Runway 09/27!"',
         }
-      : cause === 'pedestrian_bump'
+      : cause === 'coconut_drop'
         ? {
-            ml: 'ഡോക്ടർ: "ആളുകൾക്ക് ഒന്നും പറ്റിയില്ല! 108 ആംബുലൻസ് സമയത്ത് എത്തിയതുകൊണ്ട് എല്ലാവരും സേഫ് ആയി. സൂക്ഷിച്ച് ഓടിക്കൂ!"',
-            en: 'Dr. Menon: "Everyone is completely safe! Because 108 Ambulance arrived fast, nobody was hurt. Drive safely around crossings!"',
+            ml: 'ഡോക്ടർ: "അയ്യോ ഷേരു ഭായ്! തേങ്ങ വീണത് തലയ്ക്കല്ലേ? തേങ്ങയാണ് പൊട്ടിയത്! രണ്ട് പൊറോട്ടയും ബീഫും കഴിച്ചാൽ ഉഷാറാകും!"',
+            en: 'Dr. Menon: "A coconut fell on your head, Sheru Bhai?! The coconut cracked, not you! Two Porotta & Beef and you are 100% fit!"',
           }
-        : {
-            ml: 'ഡോക്ടർ: "റോഡ് ക്രോസ് ചെയ്യുമ്പോൾ ആരാടാ ഷേരു ഭായിക്ക് നേരെ വണ്ടി ഓടിച്ചത്? ഇപ്പോൾ 100% ഫിറ്റ് ആണ്!"',
-            en: 'Dr. Menon: "Who dared bump Sheru Bhai on the crossing?! You are patched up and 100% VIP fit!"',
-          };
+        : cause === 'pedestrian_bump'
+          ? {
+              ml: 'ഡോക്ടർ: "ആളുകൾക്ക് ഒന്നും പറ്റിയില്ല! 108 ആംബുലൻസ് സമയത്ത് എത്തിയതുകൊണ്ട് എല്ലാവരും സേഫ് ആയി. സൂക്ഷിച്ച് ഓടിക്കൂ!"',
+              en: 'Dr. Menon: "Everyone is completely safe! Because 108 Ambulance arrived fast, nobody was hurt. Drive safely around crossings!"',
+            }
+          : {
+              ml: 'ഡോക്ടർ: "റോഡ് ക്രോസ് ചെയ്യുമ്പോൾ ആരാടാ ഷേരു ഭായിക്ക് നേരെ വണ്ടി ഓടിച്ചത്? ഇപ്പോൾ 100% ഫിറ്റ് ആണ്!"',
+              en: 'Dr. Menon: "Who dared bump Sheru Bhai on the crossing?! You are patched up and 100% VIP fit!"',
+            };
 
   return {
     state: {

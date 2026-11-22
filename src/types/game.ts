@@ -280,7 +280,12 @@ export interface AutoDestination {
 
 export interface EmergencyIncident {
   id: string;
-  cause: 'coconut_drop' | 'crossing_hit' | 'pedestrian_bump' | 'manual_call';
+  cause:
+    | 'coconut_drop'
+    | 'crossing_hit'
+    | 'pedestrian_bump'
+    | 'manual_call'
+    | 'airplane_crash';
   title: string;
   mlMessage: string;
   enMessage: string;
@@ -288,6 +293,7 @@ export interface EmergencyIncident {
   sceneZ: number;
   status: 'alert' | 'ambulance_en_route' | 'ambulance_arrived' | 'transporting' | 'treated';
   driverChoice?: 'auto_ambulance' | 'player_driver';
+  crashRoadName?: string;
 }
 
 export interface InventoryItem {
@@ -492,6 +498,7 @@ export interface HudSnapshot {
   inVehicleIsAircraft?: boolean;
   altitude?: number;
   flightState?: 'ground' | 'takeoff_ready' | 'airborne';
+  offRunwayWarning?: boolean;
   inVehicleHasSiren?: boolean;
   sirenActive?: boolean;
   autopilotDestName?: string | null;

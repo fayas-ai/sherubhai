@@ -1,5 +1,5 @@
 import React from 'react';
-import { Ambulance, HeartPulse, Navigation, PhoneCall, Siren, X } from 'lucide-react';
+import { Ambulance, Flame, HeartPulse, Navigation, PhoneCall, Siren, X } from 'lucide-react';
 import { EmergencyIncident } from '../types/game';
 
 interface EmergencyModalProps {
@@ -20,18 +20,39 @@ export const EmergencyModal: React.FC<EmergencyModalProps> = ({
   onDismiss,
 }) => {
   if (incident.status === 'ambulance_en_route') {
+    const isPlaneCrash = incident.cause === 'airplane_crash';
     return (
-      <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 pointer-events-auto w-[92vw] max-w-md rounded-xl bg-[#991b1b]/95 border-2 border-[#fde047] shadow-[0_12px_35px_rgba(0,0,0,0.65)] text-white px-4 py-3">
+      <div
+        data-testid={isPlaneCrash ? 'crash-rescue-banner' : 'ambulance-enroute-banner'}
+        className={`fixed top-16 left-1/2 -translate-x-1/2 z-40 pointer-events-auto w-[92vw] max-w-lg rounded-xl border-2 shadow-[0_12px_35px_rgba(0,0,0,0.7)] text-white px-4 py-3 ${
+          isPlaneCrash
+            ? 'bg-[#7f1d1d]/96 border-[#fb923c]'
+            : 'bg-[#991b1b]/95 border-[#fde047]'
+        }`}
+      >
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <Ambulance className="w-7 h-7 text-[#fde047] animate-bounce shrink-0" />
-            <div>
-              <div className="font-display font-extrabold text-sm text-[#fde047] leading-tight">
-                108 AMBULANCE RUSHING TO SCENE!
+          <div className="flex items-center gap-2.5 min-w-0">
+            {isPlaneCrash ? (
+              <Flame className="w-8 h-8 text-[#fb923c] fill-[#facc15] animate-bounce shrink-0" />
+            ) : (
+              <Ambulance className="w-7 h-7 text-[#fde047] animate-bounce shrink-0" />
+            )}
+            <div className="min-w-0">
+              <div className="font-display font-extrabold text-xs sm:text-sm text-[#fde047] leading-tight">
+                {isPlaneCrash
+                  ? `MAYDAY! PLANE BLAST ON ${(incident.crashRoadName ?? 'TOWN ROAD').toUpperCase()}!`
+                  : '108 AMBULANCE RUSHING TO SCENE!'}
               </div>
-              <p className="font-ml text-[11px] text-white/95">
-                സൈറൺ ഓൺ ആണ്! മറ്റു വണ്ടികൾ സൈഡ് കൊടുക്കുന്നു...
+              <p className="font-ml text-[11px] text-white/95 leading-snug">
+                {isPlaneCrash
+                  ? '108 ആംബുലൻസും ഫയർ ഫോഴ്‌സും സൈറൺ ഓണാക്കി പാഞ്ഞെത്തുന്നു! തീ അണയ്ക്കുന്നു...'
+                  : 'സൈറൺ ഓൺ ആണ്! മറ്റു വണ്ടികൾ സൈഡ് കൊടുക്കുന്നു...'}
               </p>
+              {isPlaneCrash && (
+                <p className="text-[11px] text-[#fed7aa] font-semibold leading-snug mt-0.5">
+                  108 Ambulance &amp; Kerala Fire Rescue Engine rushing in — land on Runway 09/27 next time!
+                </p>
+              )}
             </div>
           </div>
           <button
@@ -149,13 +170,17 @@ export const EmergencyModal: React.FC<EmergencyModalProps> = ({
             <>
               <div className="p-3.5 rounded-xl bg-[#1b2922] border border-[#4ade80]/50 space-y-1">
                 <div className="font-display font-extrabold text-sm text-[#4ade80]">
-                  108 AMBULANCE HAS ARRIVED!
+                  {incident.cause === 'airplane_crash'
+                    ? '108 AMBULANCE & FIRE RESCUE ARRIVED AT CRASH SITE!'
+                    : '108 AMBULANCE HAS ARRIVED!'}
                 </div>
                 <p className="font-ml text-sm text-[#ffd166]">
-                  "ഷേരു ഭായ്! ആംബുലൻസ് എത്തി! ഓട്ടോ-ഡ്രൈവിൽ ആശുപത്രിയിൽ പോകണോ, അതോ ഭായ് തന്നെ ഓടിക്കണോ?"
+                  {incident.cause === 'airplane_crash'
+                    ? '"ഷേരു ക്യാപ്റ്റൻ! ഫയർ ഫോഴ്‌സ് തീ അണച്ചു, 108 ആംബുലൻസ് എത്തി! ആശുപത്രിയിൽ ഓട്ടോ-ഡ്രൈവിൽ പോകണോ, അതോ ഭായ് തന്നെ ഓടിക്കണോ?"'
+                    : '"ഷേരു ഭായ്! ആംബുലൻസ് എത്തി! ഓട്ടോ-ഡ്രൈവിൽ ആശുപത്രിയിൽ പോകണോ, അതോ ഭായ് തന്നെ ഓടിക്കണോ?"'}
                 </p>
                 <p className="text-xs text-[#d1d5db]">
-                  Choose who drives to Kerala General Hospital — Auto-Drive races up to 180 km/h with automatic Siren & Horn!
+                  Choose who drives to Kerala General Hospital — Auto-Drive races up to 180 km/h with automatic Siren &amp; Horn!
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
