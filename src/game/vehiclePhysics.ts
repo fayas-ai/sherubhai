@@ -54,10 +54,9 @@ export function evaluateAirplaneLanding(
   peakAltitude: number,
   wasAutoLand: boolean,
 ): 'safe_runway' | 'crash_blast' {
+  if (wasAutoLand) return 'safe_runway';
   if (isPointOnAirportTarmac(x, z)) return 'safe_runway';
   if (peakAltitude < 2.2) return 'safe_runway';
-  // Even if autoLand flag was set, touching down outside Airport tarmac is NOT a safe runway landing
-  void wasAutoLand;
   return 'crash_blast';
 }
 

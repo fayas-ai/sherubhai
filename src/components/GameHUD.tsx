@@ -8,6 +8,7 @@ import {
   Flame,
   Hand,
   Landmark,
+  Map as MapIcon,
   MapPin,
   Moon,
   Navigation,
@@ -121,6 +122,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
   const [touchRunning, setTouchRunning] = useState(false);
   const [streakOpen, setStreakOpen] = useState(false);
+  const [showMinimap, setShowMinimap] = useState<boolean>(() =>
+    typeof window === 'undefined' ? true : window.innerWidth >= 640,
+  );
   const [joyKnob, setJoyKnob] = useState({ x: 0, y: 0 });
   const joyOrigin = useRef<{ x: number; y: number; id: number } | null>(null);
   const lookLast = useRef<{ x: number; y: number; id: number } | null>(null);
@@ -144,6 +148,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   // Draw crisp 2D Kerala town minimap (with Roads, Hospital +, Resort Pool, Emergency Vehicles)
   useEffect(() => {
+    if (!showMinimap) return;
     const canvas = minimapRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -344,7 +349,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     ctx.beginPath();
     ctx.arc(cx, cy, w / 2 - 2, 0, Math.PI * 2);
     ctx.stroke();
-  }, [hud, progress.ownedBusinesses, progress.builtShops, activeLevel.targetCoords]);
+  }, [hud, progress.ownedBusinesses, progress.builtShops, activeLevel.targetCoords, showMinimap]);
 
   const handleJoyStart = (e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -682,6 +687,27 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           >
             <Sparkles className="w-4 h-4" />
             <span className="hidden xl:inline">Event [R]</span>
+          </button>
+
+          <button
+            type="button"
+            tabIndex={-1}
+            data-testid="hud-toggle-minimap"
+            aria-pressed={showMinimap}
+            aria-label={showMinimap ? 'Hide Minimap' : 'Show Minimap'}
+            title={showMinimap ? 'Hide Minimap' : 'Show Minimap'}
+            onClick={(e) => {
+              e.currentTarget.blur();
+              setShowMinimap((prev) => !prev);
+            }}
+            className={`flex items-center gap-1 px-2 sm:px-2.5 py-2 rounded-lg border text-xs font-bold shadow cursor-pointer transition-colors ${
+              showMinimap
+                ? 'bg-[#111d17]/92 hover:bg-[#1c3227] border-[#d4a12a]/85 text-[#ffd166]'
+                : 'bg-[#111d17]/75 hover:bg-[#1c3227] border-[#64748b]/70 text-[#94a3b8]'
+            }`}
+          >
+            <MapIcon className="w-4 h-4" />
+            <span className="hidden sm:inline">{showMinimap ? 'Map' : 'Show Map'}</span>
           </button>
 
           <button
@@ -1148,7 +1174,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
 
         {/* Bottom-Right: Mobile Action Buttons + Live 2D Town Minimap */}
-        <div className="order-3 flex items-end gap-3">
+        <div className="order-3 flex flex-col-reverse sm:flex-row items-end gap-2 sm:gap-3">
           {isMobileViewport && (
             <div className="pointer-events-auto flex flex-col gap-2 items-end">
               <div
@@ -1228,19 +1254,21 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             </div>
           )}
 
-          {/* Classic Circular Town Minimap restored cleanly to Bottom-Right */}
-          <div className="hidden sm:flex flex-col items-center gap-1 shrink-0">
-            <canvas
-              ref={minimapRef}
-              data-testid="town-minimap"
-              width={136}
-              height={136}
-              className="rounded-full shadow-[0_6px_22px_rgba(0,0,0,0.55)]"
-            />
-            <span className="text-[9px] font-bold tracking-wider uppercase text-[#f5ecd6]/90 hud-text-stroke">
-              + HOSPITAL · RED = 108 · GOLD = STATUE
-            </span>
-          </div>
+          {/* Classic Circular Town Minimap (toggleable via HUD Map button for smaller screens) */}
+          {showMinimap && (
+            <div className="flex flex-col items-center gap-1 shrink-0">
+              <canvas
+                ref={minimapRef}
+                data-testid="town-minimap"
+                width={136}
+                height={136}
+                className="w-[104px] h-[104px] sm:w-[136px] sm:h-[136px] rounded-full shadow-[0_6px_22px_rgba(0,0,0,0.55)]"
+              />
+              <span className="hidden sm:inline text-[9px] font-bold tracking-wider uppercase text-[#f5ecd6]/90 hud-text-stroke">
+                + HOSPITAL · RED = 108 · GOLD = STATUE
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </div>
