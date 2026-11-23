@@ -18,6 +18,19 @@ export interface WeatherHudState {
   windKmh: number;
 }
 
+export interface PurseChaseHudState {
+  active: boolean;
+  phase: 'chasing' | 'caught';
+  victimName: string;
+  thiefX: number;
+  thiefZ: number;
+  distance: number;
+  thiefHp: number;
+  canGun: boolean;
+  canSlap: boolean;
+  canHandToPolice: boolean;
+}
+
 export type ShopCategory =
   | 'tea_shop'
   | 'grocery'
@@ -521,6 +534,7 @@ export interface HudSnapshot {
   timePhase: TimeOfDayPhase;
   timeOfDay: number;
   weather: WeatherHudState;
+  activeChase?: PurseChaseHudState | null;
   npcs: { id: string; x: number; z: number; isBoss?: boolean }[];
   vehicles: { id: string; x: number; z: number; isEmergency?: boolean; isAircraft?: boolean }[];
   trafficLightState?: 'ns_green' | 'ew_green' | 'yellow';

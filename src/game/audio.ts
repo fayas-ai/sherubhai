@@ -267,6 +267,30 @@ class SoundEngine {
       this.playTone(n, n, 0.18, 'triangle', 0.2, idx * 0.1);
     });
   }
+
+  public playCartoonBlaster() {
+    // Playful golden sci-fi stun zap!
+    this.playTone(980, 260, 0.16, 'sawtooth', 0.2, 0);
+    this.playTone(1420, 520, 0.12, 'triangle', 0.18, 0.02);
+    this.playTone(320, 140, 0.14, 'square', 0.12, 0.07);
+  }
+
+  public playSlapHand() {
+    // Booming Kerala comedy mass slap + cartoon star boing!
+    this.playTone(260, 58, 0.14, 'square', 0.3, 0);
+    this.playTone(140, 42, 0.22, 'sawtooth', 0.26, 0.02);
+    this.playTone(620, 960, 0.18, 'sine', 0.14, 0.09);
+  }
+
+  public playPoliceArrest() {
+    // Kerala police whistle chirp + heroic victory chord!
+    this.playTone(1180, 1480, 0.12, 'sine', 0.2, 0);
+    this.playTone(1480, 1180, 0.14, 'sine', 0.2, 0.13);
+    const notes = [523.25, 659.25, 783.99, 1046.5];
+    notes.forEach((n, idx) => {
+      this.playTone(n, n, 0.18, 'triangle', 0.22, 0.26 + idx * 0.09);
+    });
+  }
 }
 
 export const soundEngine = new SoundEngine();

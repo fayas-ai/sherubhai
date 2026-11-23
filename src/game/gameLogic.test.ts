@@ -26,6 +26,14 @@ import {
   stepWeatherCycle,
 } from './weatherLogic';
 import {
+  CHASE_GUN_RANGE,
+  CHASE_SLAP_RANGE,
+  applyPurseChaseAction,
+  buildPurseChaseHudState,
+  startPurseChase,
+  stepPurseChase,
+} from './chaseLogic';
+import {
   HOSPITAL_INTERIOR_BOUNDS,
   applyDialogueChoice,
   buildNpcDialogue,
@@ -818,6 +826,70 @@ test('Dynamic weather cycling advances Sunny -> Rain -> Mist -> Sunny, increment
   assert.equal(mistHud.condition, 'mist');
   assert.equal(mistHud.label, 'Backwater Mist');
   assert.equal(mistHud.transitionId, 2);
+});
+
+test('Kerala Pickpocket Chase spawns thief & girl victim, runs within town bounds, and resolves via Gun, Slap Hand, and Hand to Police', () => {
+  // 1. Spawn pickpocket & girl victim ahead of Sheru
+  let chase = startPurseChase(0, 10, 0, 2);
+  assert.equal(chase.active, true);
+  assert.equal(chase.phase, 'chasing');
+  assert.equal(chase.thiefHp, 100);
+  const initialDist = Math.hypot(chase.thiefX - 0, chase.thiefZ - 10);
+  assert.ok(initialDist >= 10 && initialDist <= 18, `Expected thief 10..18m ahead, got ${initialDist}`);
+
+  // 2. Step chase physics — thief runs away while staying cleanly inside town bounds
+  const prevX = chase.thiefX;
+  const prevZ = chase.thiefZ;
+  for (let i = 0; i < 12; i++) {
+    const stepped = stepPurseChase(chase, 0, 10, 0.2);
+    assert.equal(stepped.expired, false);
+    chase = stepped.state;
+  }
+  const movedDist = Math.hypot(chase.thiefX - prevX, chase.thiefZ - prevZ);
+  assert.ok(movedDist > 4, `Expected thief to sprint away, moved only ${movedDist.toFixed(2)}m`);
+  assert.ok(Math.hypot(chase.thiefX, chase.thiefZ) < 120, 'Thief must stay within town bounds');
+
+  // 3. Gun action: out of range fails gracefully; within CHASE_GUN_RANGE deals 55 damage (2 shots = caught!)
+  const farGun = applyPurseChaseAction(chase, 'gun', chase.thiefX + CHASE_GUN_RANGE + 10, chase.thiefZ);
+  assert.equal(farGun.success, false);
+  assert.equal(farGun.state.thiefHp, 100);
+
+  const gunShot1 = applyPurseChaseAction(chase, 'gun', chase.thiefX - 10, chase.thiefZ);
+  assert.equal(gunShot1.success, true);
+  assert.equal(gunShot1.caughtNow, false);
+  assert.equal(gunShot1.state.thiefHp, 45);
+  assert.equal(gunShot1.state.phase, 'chasing');
+
+  const gunShot2 = applyPurseChaseAction(gunShot1.state, 'gun', chase.thiefX - 10, chase.thiefZ);
+  assert.equal(gunShot2.success, true);
+  assert.equal(gunShot2.caughtNow, true);
+  assert.equal(gunShot2.state.thiefHp, 0);
+  assert.equal(gunShot2.state.phase, 'caught');
+
+  // 4. Slap Hand action: requires close range <= CHASE_SLAP_RANGE and 1-hit knocks out thief
+  const freshChase = startPurseChase(5, 5, 0, 3);
+  const farSlap = applyPurseChaseAction(freshChase, 'slap', freshChase.thiefX + CHASE_SLAP_RANGE + 4, freshChase.thiefZ);
+  assert.equal(farSlap.success, false);
+
+  const closeSlap = applyPurseChaseAction(freshChase, 'slap', freshChase.thiefX - 3, freshChase.thiefZ);
+  assert.equal(closeSlap.success, true);
+  assert.equal(closeSlap.caughtNow, true);
+  assert.equal(closeSlap.state.phase, 'caught');
+  assert.equal(closeSlap.state.thiefHp, 0);
+
+  const caughtHud = buildPurseChaseHudState(closeSlap.state, freshChase.thiefX - 3, freshChase.thiefZ);
+  assert.ok(caughtHud);
+  assert.equal(caughtHud.phase, 'caught');
+  assert.equal(caughtHud.canHandToPolice, true);
+
+  // 5. Hand to Police completes arrest, awards +150 Fame & +250,000 GHOP, and resets chase to idle
+  const arrest = applyPurseChaseAction(closeSlap.state, 'police', freshChase.thiefX - 3, freshChase.thiefZ);
+  assert.equal(arrest.success, true);
+  assert.equal(arrest.completed, true);
+  assert.equal(arrest.rewardFame, 150);
+  assert.equal(arrest.rewardGhop, 250000);
+  assert.equal(arrest.state.active, false);
+  assert.equal(buildPurseChaseHudState(arrest.state, 0, 0), null);
 });
 
 

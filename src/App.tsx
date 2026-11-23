@@ -56,8 +56,8 @@ import {
 import {
   buildWeatherHudState,
   createInitialWeatherState,
-  getWeatherVisualConfig,
 } from './game/weatherLogic';
+import { PurseChaseAction } from './game/chaseLogic';
 import {
   loadProgressFromIndexedDb,
   saveCharacterProfileToIndexedDb,
@@ -557,6 +557,39 @@ export default function App() {
     soundEngine.playEventPop();
   }, [hud.playerX, hud.playerZ]);
 
+  const handleStartPurseChase = useCallback(() => {
+    if (screenRef.current !== 'playing') return;
+    setActivePanel('none');
+    setActiveDialogue(null);
+    const started = worldRef.current?.startPurseChaseEvent();
+    if (started) {
+      showToast(
+        `അയ്യോ! Pickpocket snatched ${started.victimName}'s purse! Chase & press Gun [1], Slap Hand [2], or Hand to Police [3]!`,
+      );
+    }
+  }, [showToast]);
+
+  const handlePurseChaseAction = useCallback(
+    (action: PurseChaseAction) => {
+      if (screenRef.current !== 'playing') return;
+      const res = worldRef.current?.performPurseChaseAction(action);
+      if (!res) return;
+      if (res.rewardFame > 0 || res.rewardGhop > 0) {
+        const cur = progressRef.current;
+        const nextReputation = cur.reputation + res.rewardFame;
+        const nextProg: GameProgressState = {
+          ...cur,
+          reputation: nextReputation,
+          ghopEarnedTotal: cur.ghopEarnedTotal + res.rewardGhop,
+          eventsResolvedCount: cur.eventsResolvedCount + (res.completed ? 1 : 0),
+        };
+        commitProgress(nextProg);
+      }
+      showToast(res.messageEn);
+    },
+    [commitProgress, showToast],
+  );
+
   // Global keyboard shortcuts (Start on Title, Pause Esc/P, Hotkeys M/L/B/K/I/R/T/G/U)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -615,6 +648,14 @@ export default function App() {
       } else if (e.code === 'KeyT' && !activeDialogue && activePanel === 'none') {
         const nextTime = worldRef.current?.cycleTimeOfDay() ?? 0.28;
         progressRef.current = { ...progressRef.current, timeOfDay: nextTime };
+      } else if (e.code === 'KeyC' && !activeDialogue && activePanel === 'none') {
+        handleStartPurseChase();
+      } else if (e.code === 'Digit1' && !activeDialogue && activePanel === 'none') {
+        handlePurseChaseAction('gun');
+      } else if (e.code === 'Digit2' && !activeDialogue && activePanel === 'none') {
+        handlePurseChaseAction('slap');
+      } else if (e.code === 'Digit3' && !activeDialogue && activePanel === 'none') {
+        handlePurseChaseAction('police');
       }
     };
 
@@ -626,6 +667,8 @@ export default function App() {
     activePanel,
     continueGame,
     emergencyIncident,
+    handlePurseChaseAction,
+    handleStartPurseChase,
     hasSave,
     levelCompleteNotice,
     startNewGame,
@@ -838,17 +881,11 @@ export default function App() {
           }}
           onParkVehicle={() => worldRef.current?.parkActiveVehicle()}
           onTriggerRandomEvent={triggerManualRandomEvent}
+          onStartPurseChase={handleStartPurseChase}
+          onChaseAction={handlePurseChaseAction}
           onCycleTime={() => {
             const nextTime = worldRef.current?.cycleTimeOfDay() ?? 0.28;
             progressRef.current = { ...progressRef.current, timeOfDay: nextTime };
-          }}
-          onCycleWeather={() => {
-            const nextCond = worldRef.current?.cycleWeather();
-            if (nextCond) {
-              const cfg = getWeatherVisualConfig(nextCond, hud.timePhase);
-              soundEngine.playInteract();
-              showToast(`Weather shifted: ${cfg.label} (${cfg.mlLabel})`);
-            }
           }}
           onToggleMute={() => setSettings((s) => ({ ...s, muted: !s.muted }))}
           onPause={() => {

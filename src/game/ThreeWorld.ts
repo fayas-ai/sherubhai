@@ -54,6 +54,7 @@ import {
   FallingCoconutRig,
   HospitalInteriorRig,
   NpcModelRig,
+  PickpocketThiefRig,
   SheruModelRig,
   TownPedestrianRig,
   TrafficLightRig,
@@ -73,10 +74,12 @@ import {
   createGoldenJunctionStatue,
   createNpcModel,
   createParkingBayModel,
+  createPickpocketThiefModel,
   createSheruBhaiModel,
   createStreetLamp,
   createTownPedestrianModel,
   createTrafficLightModel,
+  createVictimGirlModel,
   createZebraCrossing,
 } from './models';
 import {
@@ -110,6 +113,16 @@ import {
   getWeatherVisualConfig,
   stepWeatherCycle,
 } from './weatherLogic';
+import {
+  PurseChaseAction,
+  PurseChaseActionResult,
+  PurseChaseState,
+  applyPurseChaseAction,
+  buildPurseChaseHudState,
+  createInitialChaseState,
+  startPurseChase,
+  stepPurseChase,
+} from './chaseLogic';
 import { soundEngine } from './audio';
 
 // Module-level zero-GC scratch helpers
@@ -438,6 +451,14 @@ export class ThreeWorld {
   private frameCounter = 0;
   private posSaveThrottle = 0;
   private randomEventTimer = 38;
+  private purseChase: PurseChaseState = createInitialChaseState();
+  private chaseSeed = 1;
+  private autoChaseTimer = 42;
+  private thiefRig: PickpocketThiefRig | null = null;
+  private victimRig: TownPedestrianRig | null = null;
+  private blasterBeam: THREE.Mesh | null = null;
+  private blasterBeamTimer = 0;
+  private thiefWalkPhase = 0;
   private lastVisitedBuildingId = '';
   private frameId = 0;
   private disposed = false;
@@ -1079,6 +1100,26 @@ export class ThreeWorld {
       if (gem) this.collectibleGems.push(gem);
       this.scene.add(mesh);
     }
+
+    // Build pooled 3D Pickpocket Chase Rigs (Thief + Saree Girl Victim + Golden Stun Blaster Beam)
+    this.thiefRig = createPickpocketThiefModel();
+    this.thiefRig.root.visible = false;
+    this.scene.add(this.thiefRig.root);
+
+    this.victimRig = createVictimGirlModel();
+    this.victimRig.root.visible = false;
+    this.scene.add(this.victimRig.root);
+
+    const beamGeo = new THREE.CylinderGeometry(0.08, 0.14, 1, 8);
+    beamGeo.rotateX(Math.PI / 2);
+    const beamMat = new THREE.MeshBasicMaterial({
+      color: 0xfde047,
+      transparent: true,
+      opacity: 0.92,
+    });
+    this.blasterBeam = new THREE.Mesh(beamGeo, beamMat);
+    this.blasterBeam.visible = false;
+    this.scene.add(this.blasterBeam);
 
     this.colliders = getWorldColliders(Object.keys(initialProgress.builtShops));
   }
@@ -1772,8 +1813,114 @@ export class ThreeWorld {
 
   public cycleWeather(target?: WeatherCondition): WeatherCondition {
     this.weatherState = cycleWeatherCondition(this.weatherState, target);
-    this.hudThrottle = 1; // Immediately push new transitionId to WeatherHUD on next tick!
+    this.hudThrottle = 1;
     return this.weatherState.condition;
+  }
+
+  public startPurseChaseEvent(): { victimName: string } {
+    // Exit vehicle gently if player triggers chase while parked? Keep it seamless even on foot or near car!
+    const raw = startPurseChase(this.playerX, this.playerZ, this.playerYaw, this.chaseSeed++);
+    const safeVictim = resolveCircleWorldCollision(raw.victimX, raw.victimZ, 0.75, this.colliders);
+    const safeThief = resolveCircleWorldCollision(raw.thiefX, raw.thiefZ, 0.75, this.colliders);
+    this.purseChase = {
+      ...raw,
+      victimX: safeVictim.x,
+      victimZ: safeVictim.z,
+      thiefX: safeThief.x,
+      thiefZ: safeThief.z,
+    };
+    this.thiefWalkPhase = 0;
+
+    if (this.thiefRig) {
+      this.thiefRig.root.position.set(this.purseChase.thiefX, 0, this.purseChase.thiefZ);
+      this.thiefRig.root.rotation.y = this.purseChase.thiefYaw;
+      this.thiefRig.bodyGroup.rotation.z = 0;
+      this.thiefRig.bodyGroup.position.y = 0;
+      this.thiefRig.dizzyStars.visible = false;
+      this.thiefRig.beaconArrow.visible = true;
+      this.thiefRig.root.visible = true;
+    }
+    if (this.victimRig) {
+      this.victimRig.root.position.set(this.purseChase.victimX, 0, this.purseChase.victimZ);
+      const lookYaw = Math.atan2(
+        this.purseChase.thiefX - this.purseChase.victimX,
+        this.purseChase.thiefZ - this.purseChase.victimZ,
+      );
+      this.victimRig.root.rotation.y = lookYaw;
+      this.victimRig.root.visible = true;
+    }
+
+    this.spawnParticleBurst(this.purseChase.victimX, 1.5, this.purseChase.victimZ, 12, 0xf472b6);
+    soundEngine.playEventPop();
+    this.hudThrottle = 1;
+    return { victimName: this.purseChase.victimName };
+  }
+
+  public performPurseChaseAction(action: PurseChaseAction): PurseChaseActionResult {
+    const prevThiefX = this.purseChase.thiefX;
+    const prevThiefZ = this.purseChase.thiefZ;
+    const res = applyPurseChaseAction(this.purseChase, action, this.playerX, this.playerZ);
+    this.purseChase = res.state;
+
+    if (res.success) {
+      // Face Sheru Bhai cleanly toward the pickpocket
+      const dx = prevThiefX - this.playerX;
+      const dz = prevThiefZ - this.playerZ;
+      if (!this.activeVehicleId && Math.hypot(dx, dz) > 0.1) {
+        this.playerYaw = Math.atan2(dx, dz);
+        this.sheru.root.rotation.y = this.playerYaw;
+      }
+
+      if (action === 'gun') {
+        soundEngine.playCartoonBlaster();
+        if (this.blasterBeam) {
+          const sx = this.playerX;
+          const sy = this.playerY + 1.35;
+          const sz = this.playerZ;
+          const tx = prevThiefX;
+          const ty = 1.25;
+          const tz = prevThiefZ;
+          const dist = Math.max(0.5, Math.hypot(tx - sx, ty - sy, tz - sz));
+          this.blasterBeam.position.set((sx + tx) / 2, (sy + ty) / 2, (sz + tz) / 2);
+          this.blasterBeam.scale.set(1, 1, dist);
+          this.blasterBeam.lookAt(tx, ty, tz);
+          this.blasterBeam.visible = true;
+          (this.blasterBeam.material as THREE.MeshBasicMaterial).opacity = 0.95;
+          this.blasterBeamTimer = 0.24;
+        }
+        this.spawnParticleBurst(prevThiefX, 1.4, prevThiefZ, 18, 0xfde047);
+        this.camShakeTrauma = Math.min(1, this.camShakeTrauma + 0.3);
+        if (res.caughtNow && this.thiefRig) {
+          this.thiefRig.dizzyStars.visible = true;
+        }
+      } else if (action === 'slap') {
+        soundEngine.playSlapHand();
+        this.triggerCelebration('flex');
+        this.spawnParticleBurst(prevThiefX, 1.55, prevThiefZ, 24, 0xf97316);
+        this.camShakeTrauma = Math.min(1, this.camShakeTrauma + 0.55);
+        if (this.thiefRig) {
+          this.thiefRig.dizzyStars.visible = true;
+        }
+      } else if (action === 'police' && res.completed) {
+        soundEngine.playPoliceArrest();
+        this.triggerCelebration('celebrate');
+        this.spawnParticleBurst(prevThiefX, 1.6, prevThiefZ, 26, 0x3b82f6);
+        this.spawnParticleBurst(this.playerX, 1.8, this.playerZ, 20, 0xffd166);
+        if (this.thiefRig) {
+          this.thiefRig.root.visible = false;
+          this.thiefRig.dizzyStars.visible = false;
+        }
+        if (this.victimRig) {
+          this.victimRig.root.visible = false;
+        }
+        this.autoChaseTimer = 55;
+      }
+    } else {
+      soundEngine.playInteract();
+    }
+
+    this.hudThrottle = 1;
+    return res;
   }
 
   private initRainSystem() {
@@ -3562,6 +3709,97 @@ export class ThreeWorld {
       this.airportRig.runwayLightMat.emissiveIntensity = 0.9 + Math.sin(this.elapsed * 2.0) * 0.45;
     }
 
+    // Update Golden Stun Blaster Beam fade
+    if (this.blasterBeam && this.blasterBeam.visible) {
+      this.blasterBeamTimer -= dt;
+      if (this.blasterBeamTimer <= 0) {
+        this.blasterBeam.visible = false;
+      } else {
+        (this.blasterBeam.material as THREE.MeshBasicMaterial).opacity = Math.min(
+          1,
+          this.blasterBeamTimer / 0.24,
+        );
+      }
+    }
+
+    // Live 3D Kerala Pickpocket Chase AI & Animations
+    if (this.mode === 'playing' && !this.modalOpen) {
+      if (!this.purseChase.active && !this.activeVehicleId && !this.inHospital) {
+        this.autoChaseTimer -= dt;
+        if (this.autoChaseTimer <= 0) {
+          this.autoChaseTimer = 55;
+          this.startPurseChaseEvent();
+        }
+      } else if (this.purseChase.active) {
+        const stepped = stepPurseChase(this.purseChase, this.playerX, this.playerZ, dt);
+        if (stepped.expired) {
+          this.purseChase = stepped.state;
+          if (this.thiefRig) this.thiefRig.root.visible = false;
+          if (this.victimRig) this.victimRig.root.visible = false;
+          this.autoChaseTimer = 45;
+        } else {
+          const safeThief = resolveCircleWorldCollision(
+            stepped.state.thiefX,
+            stepped.state.thiefZ,
+            0.55,
+            this.colliders,
+          );
+          this.purseChase = {
+            ...stepped.state,
+            thiefX: safeThief.x,
+            thiefZ: safeThief.z,
+          };
+
+          if (this.thiefRig) {
+            this.thiefRig.root.visible = true;
+            this.thiefRig.root.position.set(this.purseChase.thiefX, 0, this.purseChase.thiefZ);
+            this.thiefRig.root.rotation.y = this.purseChase.thiefYaw;
+            this.thiefRig.beaconArrow.position.y = 2.65 + Math.sin(this.elapsed * 7.5) * 0.22;
+            this.thiefRig.beaconArrow.rotation.y += dt * 3.5;
+
+            if (this.purseChase.phase === 'caught') {
+              this.thiefRig.dizzyStars.visible = true;
+              this.thiefRig.dizzyStars.rotation.y += dt * 5.2;
+              this.thiefRig.bodyGroup.rotation.z = Math.sin(this.elapsed * 9) * 0.16;
+              this.thiefRig.bodyGroup.position.y = -0.1;
+              this.thiefRig.leftLeg.rotation.x = 0.12;
+              this.thiefRig.rightLeg.rotation.x = -0.12;
+              this.thiefRig.leftArm.rotation.x = -2.4;
+              this.thiefRig.rightArm.rotation.x = -2.4;
+            } else {
+              this.thiefRig.dizzyStars.visible = false;
+              this.thiefRig.bodyGroup.rotation.z = 0;
+              this.thiefWalkPhase += dt * 13.5;
+              const sw = Math.sin(this.thiefWalkPhase) * 0.85;
+              this.thiefRig.leftLeg.rotation.x = sw;
+              this.thiefRig.rightLeg.rotation.x = -sw;
+              this.thiefRig.leftArm.rotation.x = -sw * 0.8;
+              this.thiefRig.rightArm.rotation.x = -0.5 + sw * 0.25;
+              this.thiefRig.bodyGroup.position.y = Math.abs(Math.sin(this.thiefWalkPhase)) * 0.1;
+            }
+          }
+
+          if (this.victimRig) {
+            this.victimRig.root.visible = true;
+            const bounceY = Math.abs(Math.sin(this.elapsed * 6)) * 0.06;
+            this.victimRig.root.position.set(
+              this.purseChase.victimX,
+              bounceY,
+              this.purseChase.victimZ,
+            );
+            this.victimRig.root.rotation.y = Math.atan2(
+              this.purseChase.thiefX - this.purseChase.victimX,
+              this.purseChase.thiefZ - this.purseChase.victimZ,
+            );
+            // Waving arms calling for Sheru Bhai's help!
+            const wave = Math.sin(this.elapsed * 9.5) * 0.45;
+            this.victimRig.leftArm.rotation.x = -2.6 + wave;
+            this.victimRig.rightArm.rotation.x = -2.6 - wave;
+          }
+        }
+      }
+    }
+
     // Update pooled particles (zero-GC _euler + skip GPU upload when idle!)
     let anyActive = false;
     for (let i = 0; i < this.particles.length; i++) {
@@ -3714,6 +3952,7 @@ export class ThreeWorld {
       timePhase: getTimeOfDayPhase(this.timeOfDay),
       timeOfDay: this.timeOfDay,
       weather: buildWeatherHudState(this.weatherState, getTimeOfDayPhase(this.timeOfDay)),
+      activeChase: buildPurseChaseHudState(this.purseChase, this.playerX, this.playerZ),
       npcs: this.liveNpcs.map((n) => ({ id: n.id, x: n.x, z: n.z, isBoss: n.isBoss })),
       vehicles: [
         ...this.liveVehicles.map((v) => ({

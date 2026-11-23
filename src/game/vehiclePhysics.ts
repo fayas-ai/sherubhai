@@ -54,9 +54,10 @@ export function evaluateAirplaneLanding(
   peakAltitude: number,
   wasAutoLand: boolean,
 ): 'safe_runway' | 'crash_blast' {
-  if (wasAutoLand) return 'safe_runway';
   if (isPointOnAirportTarmac(x, z)) return 'safe_runway';
   if (peakAltitude < 2.2) return 'safe_runway';
+  // Even if autoLand flag was set, touching down outside Airport tarmac is NOT a safe runway landing
+  void wasAutoLand;
   return 'crash_blast';
 }
 
@@ -237,42 +238,97 @@ export function stepAirplanePhysics(
   steerInput = steerInput + (turnIn - steerInput) * (1 - Math.exp(-8 * safeDt));
 
   if (input.autoLand) {
-    // Effortless 1-button Auto-Land glide right onto Kerala Airport Runway 09 -> 27
-    const targetX = AIRPORT_RUNWAY.centerX;
-    const targetZ = AIRPORT_RUNWAY.centerZ;
-    const dx = targetX - x;
-    const dz = targetZ - z;
-    const dist = Math.hypot(dx, dz);
+    // STRICT RUNWAY-ONLY AUTO-LAND:
+    // NEVER descends onto town roads! Holds/climbs to safe cruise altitude (>= 18m) until
+    // strictly inside the Kerala Airport Runway 09/27 corridor (z = -146, x ∈ [-92, 92]).
+    const rwZ = AIRPORT_RUNWAY.centerZ;
+    const onRunwayCorridor =
+      Math.abs(z - rwZ) <= 7.5 &&
+      x >= AIRPORT_RUNWAY.minX + 6 &&
+      x <= AIRPORT_RUNWAY.maxX - 6;
 
-    if (dist > 14 && y > 0.5) {
+    if (!onRunwayCorridor) {
+      // Stage 1: Safe-altitude transit back to Runway 09/27 entry centerline — NEVER land on roads!
+      const targetX = x < -10 ? -64 : x > 10 ? 64 : 0;
+      const targetZ = rwZ;
+      const dx = targetX - x;
+      const dz = targetZ - z;
       const desiredYaw = Math.atan2(dx, dz);
       const yawErr = Math.atan2(Math.sin(desiredYaw - yaw), Math.cos(desiredYaw - yaw));
-      yaw += Math.max(-1.6 * safeDt, Math.min(1.6 * safeDt, yawErr * 2.2 * safeDt));
-      roll = roll + (Math.max(-0.32, Math.min(0.32, -yawErr * 0.7)) - roll) * (1 - Math.exp(-6 * safeDt));
-    } else {
-      // Align gently along East-West runway heading
-      const eastErr = Math.atan2(Math.sin(Math.PI / 2 - yaw), Math.cos(Math.PI / 2 - yaw));
-      const westErr = Math.atan2(Math.sin(-Math.PI / 2 - yaw), Math.cos(-Math.PI / 2 - yaw));
-      const bestErr = Math.abs(eastErr) < Math.abs(westErr) ? eastErr : westErr;
-      yaw += Math.max(-1.8 * safeDt, Math.min(1.8 * safeDt, bestErr * 3 * safeDt));
-      roll *= Math.exp(-7 * safeDt);
+      yaw += Math.max(-2.6 * safeDt, Math.min(2.6 * safeDt, yawErr * 3.4 * safeDt));
+      roll =
+        roll +
+        (Math.max(-0.32, Math.min(0.32, -yawErr * 0.65)) - roll) * (1 - Math.exp(-6 * safeDt));
+
+      // Strictly climb or hold safe altitude >= 18m while over town roads!
+      const safeCruiseAlt = 19;
+      if (y < safeCruiseAlt) {
+        y = Math.min(safeCruiseAlt, y + 11.5 * safeDt);
+        pitch = pitch + (0.14 - pitch) * (1 - Math.exp(-6 * safeDt));
+      } else if (y > safeCruiseAlt + 3) {
+        y = Math.max(safeCruiseAlt, y - 6.5 * safeDt);
+        pitch = pitch + (-0.06 - pitch) * (1 - Math.exp(-6 * safeDt));
+      } else {
+        pitch *= Math.exp(-6 * safeDt);
+      }
+
+      const transitSpeed = Math.abs(yawErr) > 0.7 ? 20 : 32;
+      speed += (transitSpeed - speed) * (1 - Math.exp(-3.2 * safeDt));
+      x += Math.sin(yaw) * speed * safeDt;
+      z += Math.cos(yaw) * speed * safeDt;
+
+      return {
+        x,
+        y,
+        z,
+        yaw,
+        pitch,
+        roll,
+        speed,
+        maxSpeed,
+        steerInput: 0,
+        flightState: 'airborne',
+        touchedDown: false,
+      };
     }
 
-    const desiredAlt = dist > 55 ? Math.min(y, 18) : Math.max(0, (dist - 12) * 0.25);
-    if (y > desiredAlt + 0.1) {
-      y = Math.max(0, y - Math.max(6.5, (y - desiredAlt) * 0.85) * safeDt);
-      pitch = pitch + (-0.1 - pitch) * (1 - Math.exp(-6 * safeDt));
+    // Stage 2: Strictly over Runway 09/27! Align along runway centerline & glide smoothly to y = 0!
+    const eastErr = Math.atan2(Math.sin(Math.PI / 2 - yaw), Math.cos(Math.PI / 2 - yaw));
+    const westErr = Math.atan2(Math.sin(-Math.PI / 2 - yaw), Math.cos(-Math.PI / 2 - yaw));
+    const bestErr = Math.abs(eastErr) < Math.abs(westErr) ? eastErr : westErr;
+    yaw += Math.max(-2.8 * safeDt, Math.min(2.8 * safeDt, bestErr * 4.5 * safeDt));
+    roll *= Math.exp(-8 * safeDt);
+
+    // Gently keep plane centered on Runway 09/27 Z centerline while gliding down
+    z += (rwZ - z) * (1 - Math.exp(-4.0 * safeDt));
+
+    if (y > 0.08) {
+      y = Math.max(0, y - Math.max(6.8, y * 0.62) * safeDt);
+      pitch = pitch + (-0.08 - pitch) * (1 - Math.exp(-6 * safeDt));
     } else {
-      y = Math.max(0, y - 5 * safeDt);
-      pitch *= Math.exp(-7 * safeDt);
+      y = 0;
+      pitch = 0;
     }
 
-    const targetSpd = y > 0.2 ? Math.max(17, Math.min(26, dist * 0.45)) : 0;
-    speed += (targetSpd - speed) * (1 - Math.exp(-(y > 0.2 ? 2.5 : 3.2) * safeDt));
+    const targetSpd = y > 0.2 ? 14 : 0;
+    speed += (targetSpd - speed) * (1 - Math.exp(-(y > 0.2 ? 3.0 : 4.2) * safeDt));
     if (y <= 0.05 && speed < 0.4) speed = 0;
 
-    x += Math.sin(yaw) * speed * safeDt;
-    z += Math.cos(yaw) * speed * safeDt;
+    x = Math.max(
+      AIRPORT_RUNWAY.minX + 6,
+      Math.min(AIRPORT_RUNWAY.maxX - 6, x + Math.sin(yaw) * speed * safeDt),
+    );
+    z = Math.max(
+      AIRPORT_RUNWAY.minZ + 2,
+      Math.min(AIRPORT_RUNWAY.maxZ - 2, z + Math.cos(yaw) * speed * safeDt),
+    );
+
+    const touchedDown = wasAirborne && y <= 0.15;
+    if (touchedDown) {
+      y = 0;
+      pitch = 0;
+      roll = 0;
+    }
 
     return {
       x,
@@ -285,7 +341,7 @@ export function stepAirplanePhysics(
       maxSpeed,
       steerInput: 0,
       flightState: y > 0.35 ? 'airborne' : 'ground',
-      touchedDown: wasAirborne && y <= 0.15,
+      touchedDown,
     };
   }
 

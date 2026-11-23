@@ -4,7 +4,9 @@ import {
   Building2,
   Car,
   Compass,
+  Crosshair,
   Flame,
+  Hand,
   Landmark,
   MapPin,
   Moon,
@@ -12,6 +14,8 @@ import {
   ParkingSquare,
   Pause,
   Plane,
+  ShieldAlert,
+  ShieldCheck,
   Shirt,
   Siren,
   Sparkles,
@@ -39,7 +43,7 @@ import {
 import { AUTO_DESTINATIONS } from '../data/vehiclesData';
 import { formatGhop, getDailyStreakTier } from '../game/gameLogic';
 import { AIRPORT_RUNWAY } from '../game/vehiclePhysics';
-import { WeatherHUD } from './WeatherHUD';
+import { PurseChaseAction } from '../game/chaseLogic';
 
 interface GameHUDProps {
   hud: HudSnapshot;
@@ -61,8 +65,9 @@ interface GameHUDProps {
   onToggleSiren: () => void;
   onParkVehicle: () => void;
   onTriggerRandomEvent: () => void;
+  onStartPurseChase: () => void;
+  onChaseAction: (action: PurseChaseAction) => void;
   onCycleTime: () => void;
-  onCycleWeather: () => void;
   onToggleMute: () => void;
   onPause: () => void;
   onInteractClick: () => void;
@@ -101,8 +106,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onToggleSiren,
   onParkVehicle,
   onTriggerRandomEvent,
+  onStartPurseChase,
+  onChaseAction,
   onCycleTime,
-  onCycleWeather,
   onToggleMute,
   onPause,
   onInteractClick,
@@ -293,6 +299,21 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       ctx.fillStyle = n.isBoss ? '#ff4d6d' : '#f4f1de';
       ctx.beginPath();
       ctx.arc(nx, nz, n.isBoss ? 3.2 : 1.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Active Pickpocket Thief Blip on Minimap (High-contrast red & gold radar ring!)
+    if (hud.activeChase?.active) {
+      const tx = cx + hud.activeChase.thiefX * scale;
+      const tz = cy + hud.activeChase.thiefZ * scale;
+      ctx.strokeStyle = '#fde047';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(tx, tz, 6.5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.arc(tx, tz, 3.6, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -516,23 +537,37 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
         </div>
 
-        {/* Top-Right: Compact Action Buttons + Dedicated Weather HUD directly next to the Circular Minimap */}
-        <div className="flex flex-col-reverse xl:flex-row items-end xl:items-start justify-end gap-1.5 sm:gap-2 min-w-0 max-w-[196px] sm:max-w-none">
-          <div className="pointer-events-auto flex flex-wrap justify-end gap-1 sm:gap-1.5 max-w-[184px] sm:max-w-[460px] xl:max-w-[540px]">
-            <button
-              type="button"
-              tabIndex={-1}
-              data-testid="hud-call-108"
-              aria-label="Call 108 Emergency Ambulance"
-              onClick={(e) => {
-                e.currentTarget.blur();
-                onCallEmergency108();
-              }}
-              className="flex items-center gap-1 px-2 sm:px-2.5 py-2 rounded-lg bg-[#b91c1c] hover:bg-[#dc2626] border border-[#fca5a5] text-white text-xs font-extrabold shadow cursor-pointer"
-            >
-              <Siren className="w-4 h-4 text-[#fde047]" />
-              <span className="hidden sm:inline">108</span>
-            </button>
+        {/* Top-Right: Clean Classic Action Bar (No cluttered Weather HUD) */}
+        <div className="pointer-events-auto flex flex-wrap justify-end gap-1 sm:gap-1.5 max-w-[196px] sm:max-w-[560px]">
+          <button
+            type="button"
+            tabIndex={-1}
+            data-testid="hud-start-chase"
+            aria-label="Start Pickpocket Purse Chase"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              onStartPurseChase();
+            }}
+            className="flex items-center gap-1 px-2 sm:px-2.5 py-2 rounded-lg bg-[#9a3412] hover:bg-[#c2410c] border border-[#fdba74] text-[#fff7ed] text-xs font-extrabold shadow cursor-pointer"
+          >
+            <ShieldAlert className="w-4 h-4 text-[#fde047]" />
+            <span className="hidden sm:inline">Catch Thief</span>
+          </button>
+
+          <button
+            type="button"
+            tabIndex={-1}
+            data-testid="hud-call-108"
+            aria-label="Call 108 Emergency Ambulance"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              onCallEmergency108();
+            }}
+            className="flex items-center gap-1 px-2 sm:px-2.5 py-2 rounded-lg bg-[#b91c1c] hover:bg-[#dc2626] border border-[#fca5a5] text-white text-xs font-extrabold shadow cursor-pointer"
+          >
+            <Siren className="w-4 h-4 text-[#fde047]" />
+            <span className="hidden sm:inline">108</span>
+          </button>
 
           <button
             type="button"
@@ -681,40 +716,18 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             {settings.muted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
           </button>
 
-            <button
-              type="button"
-              tabIndex={-1}
-              aria-label="Pause Game"
-              onClick={(e) => {
-                e.currentTarget.blur();
-                onPause();
-              }}
-              className="p-2 rounded-lg bg-[#111d17]/92 hover:bg-[#1c3227] border border-[#d4a12a]/70 text-[#fff8e7] shadow cursor-pointer"
-            >
-              <Pause className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Top-of-Screen Weather HUD directly next to the Circular Town Minimap */}
-          <div className="flex items-start gap-1.5 sm:gap-2.5 shrink-0 max-w-full">
-            <WeatherHUD
-              weather={hud.weather}
-              timePhase={hud.timePhase}
-              onCycleWeather={onCycleWeather}
-            />
-            <div className="pointer-events-auto flex flex-col items-center gap-0.5 shrink-0">
-              <canvas
-                ref={minimapRef}
-                data-testid="town-minimap"
-                width={116}
-                height={116}
-                className="w-12 h-12 sm:w-[116px] sm:h-[116px] rounded-full shadow-[0_6px_18px_rgba(0,0,0,0.55)]"
-              />
-              <span className="hidden sm:inline text-[9px] font-bold tracking-wider uppercase text-[#f5ecd6]/90 hud-text-stroke">
-                + Hosp · Red=108 · Gold=Statue
-              </span>
-            </div>
-          </div>
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label="Pause Game"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              onPause();
+            }}
+            className="p-2 rounded-lg bg-[#111d17]/92 hover:bg-[#1c3227] border border-[#d4a12a]/70 text-[#fff8e7] shadow cursor-pointer"
+          >
+            <Pause className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
@@ -791,8 +804,102 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           )}
         </div>
 
-        {/* Bottom-Center: Contextual Interaction Prompt OR Active Vehicle 180 KM/H Driving Bar */}
+        {/* Bottom-Center: Pickpocket Chase Action Bar + Contextual Interact Prompt / Driving Bar */}
         <div className="order-1 sm:order-2 w-full sm:w-auto flex flex-col items-center gap-1.5 mb-0 sm:mb-1 max-w-full">
+          {hud.activeChase?.active && (
+            <div
+              data-testid="chase-action-bar"
+              className="pointer-events-auto w-full sm:w-auto flex flex-col gap-2 px-3 sm:px-4 py-2.5 rounded-xl bg-[#1a1210]/96 border-2 border-[#ef4444] shadow-[0_8px_28px_rgba(0,0,0,0.72)] max-w-[96vw]"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider text-[#fca5a5]">
+                    <ShieldAlert className="w-3.5 h-3.5 text-[#fde047] shrink-0" />
+                    <span className="truncate">
+                      {hud.activeChase.phase === 'caught'
+                        ? 'PICKPOCKET CAUGHT! SHARE TO KERALA POLICE!'
+                        : `PURSE SNATCHER · ${hud.activeChase.victimName.toUpperCase()}`}
+                    </span>
+                  </div>
+                  <div className="font-display font-extrabold text-xs sm:text-sm text-[#fff8e7] mt-0.5">
+                    {hud.activeChase.phase === 'caught'
+                      ? 'Thief dizzy & stunned — tap Hand to Police for Hero Reward!'
+                      : `Chase thief (${hud.activeChase.distance}m away) — Shoot Gun or Slap Hand!`}
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  <div className="text-[9px] font-bold uppercase text-[#fde047] tabular-nums">
+                    STAMINA {hud.activeChase.thiefHp}%
+                  </div>
+                  <div className="w-20 sm:w-24 h-2 rounded bg-[#3b1c1c] overflow-hidden mt-0.5 border border-[#ef4444]/50">
+                    <div
+                      className={`h-full transition-all duration-150 ${
+                        hud.activeChase.phase === 'caught' ? 'bg-[#38bdf8]' : 'bg-[#ef4444]'
+                      }`}
+                      style={{ width: `${hud.activeChase.thiefHp}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="chase-btn-gun"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    onChaseAction('gun');
+                  }}
+                  className={`flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-2 rounded-lg font-display font-extrabold text-xs sm:text-sm border-2 transition-transform active:scale-95 cursor-pointer ${
+                    hud.activeChase.canGun && hud.activeChase.phase !== 'caught'
+                      ? 'bg-[#f59e0b] hover:bg-[#fbbf24] border-[#fef08a] text-[#141a17]'
+                      : 'bg-[#2b2319] hover:bg-[#3a2e20] border-[#785c2a] text-[#fcd34d]'
+                  }`}
+                >
+                  <Crosshair className="w-4 h-4 shrink-0" />
+                  <span>Gun [1]</span>
+                </button>
+
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="chase-btn-slap"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    onChaseAction('slap');
+                  }}
+                  className={`flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-2 rounded-lg font-display font-extrabold text-xs sm:text-sm border-2 transition-transform active:scale-95 cursor-pointer ${
+                    hud.activeChase.canSlap
+                      ? 'bg-[#ea580c] hover:bg-[#f97316] border-[#fed7aa] text-white'
+                      : 'bg-[#2b1d17] hover:bg-[#3a261e] border-[#7c3d22] text-[#fdba74]'
+                  }`}
+                >
+                  <Hand className="w-4 h-4 shrink-0" />
+                  <span>Slap Hand [2]</span>
+                </button>
+
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="chase-btn-police"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    onChaseAction('police');
+                  }}
+                  className={`flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-2 rounded-lg font-display font-extrabold text-xs sm:text-sm border-2 transition-transform active:scale-95 cursor-pointer ${
+                    hud.activeChase.canHandToPolice
+                      ? 'bg-[#2563eb] hover:bg-[#3b82f6] border-[#fde047] text-white shadow-[0_0_12px_rgba(59,130,246,0.65)]'
+                      : 'bg-[#172338] hover:bg-[#1e2f4d] border-[#3b5580] text-[#93c5fd]'
+                  }`}
+                >
+                  <ShieldCheck className="w-4 h-4 shrink-0" />
+                  <span>Hand to Police [3]</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {hud.inVehicleName && hud.inVehicleIsAircraft ? (
             <div
               data-testid="flight-hud"
@@ -1120,6 +1227,20 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               )}
             </div>
           )}
+
+          {/* Classic Circular Town Minimap restored cleanly to Bottom-Right */}
+          <div className="hidden sm:flex flex-col items-center gap-1 shrink-0">
+            <canvas
+              ref={minimapRef}
+              data-testid="town-minimap"
+              width={136}
+              height={136}
+              className="rounded-full shadow-[0_6px_22px_rgba(0,0,0,0.55)]"
+            />
+            <span className="text-[9px] font-bold tracking-wider uppercase text-[#f5ecd6]/90 hud-text-stroke">
+              + HOSPITAL · RED = 108 · GOLD = STATUE
+            </span>
+          </div>
         </div>
       </div>
     </div>

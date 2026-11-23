@@ -3002,5 +3002,163 @@ export function createTownPedestrianModel(
   return { root, leftLeg, rightLeg, leftArm, rightArm };
 }
 
+export interface PickpocketThiefRig {
+  root: THREE.Group;
+  bodyGroup: THREE.Group;
+  leftLeg: THREE.Group;
+  rightLeg: THREE.Group;
+  leftArm: THREE.Group;
+  rightArm: THREE.Group;
+  stolenPurse: THREE.Group;
+  dizzyStars: THREE.Group;
+  beaconArrow: THREE.Mesh;
+}
+
+/**
+ * Hilarious cartoon Kerala Pickpocket / Purse-Snatcher rig:
+ * black/white thief outfit, bandit eye mask, bright stolen pink/gold purse,
+ * overhead red chase marker arrow, and spinning cartoon dizzy stars when slapped/stunned!
+ */
+export function createPickpocketThiefModel(): PickpocketThiefRig {
+  const root = new THREE.Group();
+  const bodyGroup = new THREE.Group();
+  root.add(bodyGroup);
+
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0xb68158, roughness: 0.72 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.7 });
+  const stripeMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.75 });
+  const redCapMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.65 });
+
+  const leftLeg = new THREE.Group();
+  leftLeg.position.set(-0.15, 0.74, 0);
+  const legGeo = new THREE.BoxGeometry(0.21, 0.72, 0.23);
+  const lLeg = new THREE.Mesh(legGeo, darkMat);
+  lLeg.position.y = -0.35;
+  leftLeg.add(lLeg);
+
+  const rightLeg = new THREE.Group();
+  rightLeg.position.set(0.15, 0.74, 0);
+  const rLeg = new THREE.Mesh(legGeo, darkMat);
+  rLeg.position.y = -0.35;
+  rightLeg.add(rLeg);
+  bodyGroup.add(leftLeg, rightLeg);
+
+  // Striped sneaky bandit jersey
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.68, 0.34), darkMat);
+  torso.position.y = 1.08;
+  bodyGroup.add(torso);
+  for (const sy of [0.88, 1.08, 1.28]) {
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.08, 0.36), stripeMat);
+    stripe.position.y = sy;
+    bodyGroup.add(stripe);
+  }
+
+  const leftArm = new THREE.Group();
+  leftArm.position.set(-0.36, 1.35, 0);
+  const armGeo = new THREE.BoxGeometry(0.16, 0.56, 0.16);
+  const la = new THREE.Mesh(armGeo, darkMat);
+  la.position.y = -0.26;
+  leftArm.add(la);
+
+  const rightArm = new THREE.Group();
+  rightArm.position.set(0.36, 1.35, 0);
+  const ra = new THREE.Mesh(armGeo, darkMat);
+  ra.position.y = -0.26;
+  rightArm.add(ra);
+
+  // Bright pink & gold stolen handbag clutched in the thief's right hand!
+  const stolenPurse = new THREE.Group();
+  stolenPurse.position.set(0.06, -0.54, 0.14);
+  const purseBody = new THREE.Mesh(
+    new THREE.BoxGeometry(0.36, 0.28, 0.18),
+    new THREE.MeshStandardMaterial({ color: 0xec4899, roughness: 0.45 }),
+  );
+  const purseClasp = new THREE.Mesh(
+    new THREE.BoxGeometry(0.12, 0.08, 0.2),
+    new THREE.MeshStandardMaterial({ color: 0xffd166, roughness: 0.25, metalness: 0.85 }),
+  );
+  purseClasp.position.y = 0.05;
+  const purseStrap = new THREE.Mesh(
+    new THREE.TorusGeometry(0.11, 0.025, 6, 10, Math.PI),
+    new THREE.MeshStandardMaterial({ color: 0xfde047, roughness: 0.3, metalness: 0.7 }),
+  );
+  purseStrap.position.y = 0.14;
+  stolenPurse.add(purseBody, purseClasp, purseStrap);
+  rightArm.add(stolenPurse);
+
+  bodyGroup.add(leftArm, rightArm);
+
+  // Head + Cartoon Bandit Mask + Red Beanie
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), skinMat);
+  head.position.y = 1.64;
+  const mask = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.12, 0.26), darkMat);
+  mask.position.set(0, 1.66, 0.12);
+  const beanie = new THREE.Mesh(
+    new THREE.SphereGeometry(0.25, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55),
+    redCapMat,
+  );
+  beanie.position.y = 1.69;
+  bodyGroup.add(head, mask, beanie);
+
+  // Spinning cartoon dizzy stars (visible when stunned / slapped!)
+  const dizzyStars = new THREE.Group();
+  dizzyStars.position.y = 2.15;
+  dizzyStars.visible = false;
+  const starMat = new THREE.MeshStandardMaterial({
+    color: 0xfde047,
+    emissive: 0xf59e0b,
+    emissiveIntensity: 0.9,
+  });
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2;
+    const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.11, 0), starMat);
+    star.position.set(Math.cos(a) * 0.42, 0, Math.sin(a) * 0.42);
+    dizzyStars.add(star);
+  }
+  root.add(dizzyStars);
+
+  // High-visibility glowing red target chevron floating overhead so player spots the thief instantly!
+  const beaconArrow = new THREE.Mesh(
+    new THREE.ConeGeometry(0.36, 0.72, 4),
+    new THREE.MeshStandardMaterial({
+      color: 0xef4444,
+      emissive: 0xdc2626,
+      emissiveIntensity: 1.15,
+      roughness: 0.3,
+    }),
+  );
+  beaconArrow.rotation.x = Math.PI;
+  beaconArrow.position.y = 3.1;
+  root.add(beaconArrow);
+
+  return {
+    root,
+    bodyGroup,
+    leftLeg,
+    rightLeg,
+    leftArm,
+    rightArm,
+    stolenPurse,
+    dizzyStars,
+    beaconArrow,
+  };
+}
+
+/**
+ * Animated Kerala Girl Bystander in vibrant saree waving arms for help when her purse is snatched!
+ */
+export function createVictimGirlModel(): TownPedestrianRig {
+  const rig = createTownPedestrianModel(0xe11d48, 0xfef08a, 0xc28b62, true);
+  // Add golden hair bun + overhead exclamation alert badge
+  const bun = new THREE.Mesh(
+    new THREE.SphereGeometry(0.11, 8, 6),
+    new THREE.MeshStandardMaterial({ color: 0x1e1b18, roughness: 0.85 }),
+  );
+  bun.position.set(0, 1.56, -0.22);
+  rig.root.add(bun);
+  return rig;
+}
+
+
 
 
