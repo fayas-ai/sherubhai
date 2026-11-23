@@ -293,6 +293,16 @@ export function getWorldColliders(builtPlotIds: string[] = []): AABB[] {
       height: 6,
     });
   }
+  // Golden Sheru Bhai Junction Statue center roundabout pedestal at (0, -4)
+  // Leaves ±3.2m traffic lanes and PLAYER_SPAWN (0, 10) completely clear!
+  boxes.push({
+    id: 'junction_golden_statue',
+    minX: -2.0,
+    maxX: 2.0,
+    minZ: -6.0,
+    maxZ: -2.0,
+    height: 6.2,
+  });
   return boxes;
 }
 

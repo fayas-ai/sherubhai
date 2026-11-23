@@ -54,6 +54,7 @@ import {
   HospitalInteriorRig,
   NpcModelRig,
   SheruModelRig,
+  TownPedestrianRig,
   TrafficLightRig,
   applyPlayerAppearance,
   createAdBoard300x250Model,
@@ -68,10 +69,12 @@ import {
   createEmptyPlotModel,
   createFallingCoconutRig,
   createGoatModel,
+  createGoldenJunctionStatue,
   createNpcModel,
   createParkingBayModel,
   createSheruBhaiModel,
   createStreetLamp,
+  createTownPedestrianModel,
   createTrafficLightModel,
   createZebraCrossing,
 } from './models';
@@ -84,7 +87,13 @@ import {
   stepAirplanePhysics,
   stepGroundVehiclePhysics,
 } from './vehiclePhysics';
-import { TOWN_PALM_TREES, TOWN_ROADS, getRoadNameAt } from './roadNetwork';
+import {
+  TOWN_CROWD_ROUTES,
+  TOWN_PALM_TREES,
+  TOWN_ROADS,
+  TOWN_TRAFFIC_ROUTES,
+  getRoadNameAt,
+} from './roadNetwork';
 import { VehicleModelRig, createDetailedVehicleModel } from './vehicleModels';
 import {
   createGrassTexture,
@@ -160,6 +169,7 @@ interface LiveVehicle {
 
 interface AiTrafficVehicle {
   id: string;
+  roadId: string;
   name: string;
   type: VehicleDef['type'];
   isBus: boolean;
@@ -176,6 +186,22 @@ interface AiTrafficVehicle {
   lastBusStopId: string;
   rig: VehicleModelRig;
   active: boolean;
+}
+
+interface TownCrowdWalker {
+  id: string;
+  ax: number;
+  az: number;
+  bx: number;
+  bz: number;
+  t: number;
+  dir: 1 | -1;
+  speed: number;
+  length: number;
+  walkPhase: number;
+  x: number;
+  z: number;
+  rig: TownPedestrianRig;
 }
 
 interface LiveCoconutPalm {
@@ -300,6 +326,12 @@ export class ThreeWorld {
   private plotMeshes = new Map<string, THREE.Group>();
   private builtShopAnimations: { mesh: THREE.Group; progress: number }[] = [];
   private liveNpcs: LiveNpc[] = [];
+  private townCrowd: TownCrowdWalker[] = [];
+  private goldenStatueRig: {
+    group: THREE.Group;
+    statueSpinPivot: THREE.Group;
+    uplightMat: THREE.MeshStandardMaterial;
+  } | null = null;
   private liveVehicles: LiveVehicle[] = [];
   private aiTraffic: AiTrafficVehicle[] = [];
   private trafficLights: { rig: TrafficLightRig; axis: 'ns' | 'ew' }[] = [];
@@ -713,28 +745,10 @@ export class ThreeWorld {
     plaza.receiveShadow = true;
     this.scene.add(plaza);
 
-    // Decorative Kerala brass town center monument at junction center (-4) offset nicely off spawn
-    const monument = new THREE.Group();
-    monument.position.set(0, 0, -4);
-    const monoBase = new THREE.Mesh(
-      new THREE.CylinderGeometry(2.1, 2.5, 0.55, 14),
-      new THREE.MeshStandardMaterial({ color: 0xe6dcc8, roughness: 0.7 }),
-    );
-    monoBase.position.y = 0.275;
-    monument.add(monoBase);
-    const grassCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.75, 1.85, 0.15, 14),
-      new THREE.MeshStandardMaterial({ color: 0x3b8c47, roughness: 0.85 }),
-    );
-    grassCap.position.y = 0.58;
-    monument.add(grassCap);
-    const goldenLamp = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.18, 0.55, 1.8, 10),
-      new THREE.MeshStandardMaterial({ color: 0xf4c430, roughness: 0.22, metalness: 0.88 }),
-    );
-    goldenLamp.position.y = 1.48;
-    monument.add(goldenLamp);
-    this.scene.add(monument);
+    // Iconic 24K Golden Sheru Bhai Lion-King Statue Monument at Main Junction center (0, -4)
+    this.goldenStatueRig = createGoldenJunctionStatue(this.maxAnisotropy);
+    this.goldenStatueRig.group.position.set(0, 0, -4);
+    this.scene.add(this.goldenStatueRig.group);
 
     // Buildings
     const plasterBump = createPlasterBumpTexture(this.maxAnisotropy);
@@ -970,6 +984,39 @@ export class ThreeWorld {
       });
     }
 
+    // Spawn 48 lively walking Kerala townspeople across EVERY district of the entire town!
+    TOWN_CROWD_ROUTES.forEach((route, idx) => {
+      const rig = createTownPedestrianModel(
+        route.shirtColor,
+        route.lowerColor,
+        route.skinColor,
+        Boolean(route.isSaree),
+      );
+      const t0 = (idx * 0.27 + 0.15) % 1;
+      const sx = route.ax + (route.bx - route.ax) * t0;
+      const sz = route.az + (route.bz - route.az) * t0;
+      const dir: 1 | -1 = idx % 2 === 0 ? 1 : -1;
+      const yaw = Math.atan2((route.bx - route.ax) * dir, (route.bz - route.az) * dir);
+      rig.root.position.set(sx, 0, sz);
+      rig.root.rotation.y = yaw;
+      this.scene.add(rig.root);
+      this.townCrowd.push({
+        id: route.id,
+        ax: route.ax,
+        az: route.az,
+        bx: route.bx,
+        bz: route.bz,
+        t: t0,
+        dir,
+        speed: route.speed,
+        length: Math.max(1, Math.hypot(route.bx - route.ax, route.bz - route.az)),
+        walkPhase: idx * 0.9,
+        x: sx,
+        z: sz,
+        rig,
+      });
+    });
+
     // Spawn Drivable Vehicles (using detailed 28-archetype compact cartoon models!)
     for (const v of VEHICLES) {
       const savedPark = initialProgress.parkedVehicles?.[v.id];
@@ -1020,56 +1067,8 @@ export class ThreeWorld {
   }
 
   private buildRoadTraffic() {
-    // 4 clean non-overlapping Kerala road loops (EW main road, NS avenue, North Uptown/Hospital loop, South Resort loop)
-    const loopEW: Vec2[] = [
-      { x: -58, z: -1.6 },
-      { x: 58, z: -1.6 },
-      { x: 58, z: -6.4 },
-      { x: -58, z: -6.4 },
-    ];
-    const loopNS: Vec2[] = [
-      { x: 2.6, z: 38 },
-      { x: 2.6, z: -34 },
-      { x: -2.6, z: -34 },
-      { x: -2.6, z: 38 },
-    ];
-    const loopNorth: Vec2[] = [
-      { x: -46, z: -30.2 },
-      { x: 48, z: -30.2 },
-      { x: 48, z: -33.8 },
-      { x: -46, z: -33.8 },
-    ];
-    const loopSouth: Vec2[] = [
-      { x: -44, z: 32.2 },
-      { x: 44, z: 32.2 },
-      { x: 44, z: 35.8 },
-      { x: -44, z: 35.8 },
-    ];
-
-    const trafficRoster: {
-      catalogId: string;
-      loop: Vec2[];
-      wpIndex: number;
-      startLerp: number;
-      cruise: number;
-    }[] = [
-      { catalogId: 'veh_kerala_auto', loop: loopEW, wpIndex: 0, startLerp: 0.15, cruise: 9.2 },
-      { catalogId: 'veh_ksrtc_bus', loop: loopNorth, wpIndex: 0, startLerp: 0.2, cruise: 8.5 },
-      { catalogId: 'veh_pepper_hatch', loop: loopEW, wpIndex: 1, startLerp: 0.4, cruise: 10.5 },
-      { catalogId: 'veh_kerala_bus', loop: loopNS, wpIndex: 2, startLerp: 0.25, cruise: 8.8 },
-      { catalogId: 'veh_town_taxi', loop: loopNS, wpIndex: 0, startLerp: 0.3, cruise: 10.2 },
-      { catalogId: 'veh_delivery_van', loop: loopEW, wpIndex: 2, startLerp: 0.35, cruise: 9.0 },
-      { catalogId: 'veh_kochi_scooter', loop: loopSouth, wpIndex: 0, startLerp: 0.2, cruise: 9.4 },
-      { catalogId: 'veh_police_jeep', loop: loopNorth, wpIndex: 2, startLerp: 0.45, cruise: 11.2 },
-      { catalogId: 'veh_school_bus', loop: loopSouth, wpIndex: 2, startLerp: 0.5, cruise: 8.2 },
-      { catalogId: 'veh_family_cruiser', loop: loopEW, wpIndex: 3, startLerp: 0.55, cruise: 10.4 },
-      { catalogId: 'veh_royal_bike', loop: loopNS, wpIndex: 1, startLerp: 0.6, cruise: 11.4 },
-      { catalogId: 'veh_goods_truck', loop: loopNorth, wpIndex: 1, startLerp: 0.65, cruise: 7.8 },
-      { catalogId: 'veh_wayanad_jeep', loop: loopSouth, wpIndex: 1, startLerp: 0.7, cruise: 9.8 },
-      { catalogId: 'veh_mini_bus', loop: loopEW, wpIndex: 0, startLerp: 0.72, cruise: 8.6 },
-    ];
-
-    trafficRoster.forEach((item, idx) => {
+    // Spawn 34 diverse Kerala vehicles cruising ALL 11 paved road routes across the entire town!
+    TOWN_TRAFFIC_ROUTES.forEach((item, idx) => {
       const cat = VEHICLE_CATALOG.find((v) => v.id === item.catalogId) ?? VEHICLE_CATALOG[0];
       const a = item.loop[item.wpIndex];
       const b = item.loop[(item.wpIndex + 1) % item.loop.length];
@@ -1093,6 +1092,7 @@ export class ThreeWorld {
         cat.type === 'tourist_bus';
       this.aiTraffic.push({
         id: `ai_traffic_${idx}`,
+        roadId: item.roadId,
         name: cat.name,
         type: cat.type,
         isBus,
@@ -1295,11 +1295,16 @@ export class ThreeWorld {
   }
 
   private applyGraphicsQuality(q: GameSettings['graphicsQuality']) {
-    // 4GB RAM Laptop Traffic Cap: Low=8, Medium=12, High=14 active road vehicles
-    const maxTraffic = q === 'low' ? 8 : q === 'medium' ? 12 : 14;
-    this.aiTraffic.forEach((v, idx) => {
-      v.active = idx < maxTraffic;
-      v.rig.root.visible = v.active;
+    // Keep ALL 11 road routes populated across every quality preset!
+    // Low keeps 2 vehicles per road (~22), Medium keeps 3 per road (~31), High keeps all 34.
+    const perRoadCap = q === 'low' ? 2 : q === 'medium' ? 3 : 10;
+    const roadCounts = new Map<string, number>();
+    this.aiTraffic.forEach((v) => {
+      const count = roadCounts.get(v.roadId) ?? 0;
+      const active = count < perRoadCap;
+      roadCounts.set(v.roadId, count + 1);
+      v.active = active;
+      v.rig.root.visible = active;
     });
 
     if (this.isSoftwareGl) {
@@ -3252,7 +3257,10 @@ export class ThreeWorld {
 
         ai.rig.root.position.set(ai.x, 0, ai.z);
         ai.rig.root.rotation.y = ai.yaw;
-        for (const w of ai.rig.wheels) w.rotation.x += ai.speed * dt * 2.2;
+        // Distance-cull wheel spin math beyond 95m for smooth 60 FPS with 34 vehicles!
+        if (distPlayer <= 95) {
+          for (const w of ai.rig.wheels) w.rotation.x += ai.speed * dt * 2.2;
+        }
 
         // Auto & Bus Driver Road Ego when Sheru gets close on the road!
         if ((ai.isAuto || ai.isBus) && distPlayer < 7.2 && this.roadEgoCooldown <= 0) {
@@ -3351,6 +3359,50 @@ export class ThreeWorld {
         n.rig.bossHalo.rotation.z += dt * 1.8;
         n.rig.bossHalo.position.y = 2.65 + Math.sin(this.elapsed * 3) * 0.12;
       }
+    }
+
+    // Animate 48 lively walking Kerala townspeople across EVERY district (distance-culled limb math for smooth FPS!)
+    const isLowQ = this.settings.graphicsQuality === 'low';
+    for (const ped of this.townCrowd) {
+      ped.t += (ped.dir * ped.speed * dt) / ped.length;
+      if (ped.t >= 1) {
+        ped.t = 1;
+        ped.dir = -1;
+      } else if (ped.t <= 0) {
+        ped.t = 0;
+        ped.dir = 1;
+      }
+      ped.x = ped.ax + (ped.bx - ped.ax) * ped.t;
+      ped.z = ped.az + (ped.bz - ped.az) * ped.t;
+
+      const distSq = (ped.x - this.playerX) ** 2 + (ped.z - this.playerZ) ** 2;
+      if (isLowQ && distSq > 115 * 115) {
+        ped.rig.root.visible = false;
+        continue;
+      }
+      ped.rig.root.visible = true;
+      ped.rig.root.position.set(ped.x, 0, ped.z);
+      ped.rig.root.rotation.y = Math.atan2(
+        (ped.bx - ped.ax) * ped.dir,
+        (ped.bz - ped.az) * ped.dir,
+      );
+
+      if (distSq <= 68 * 68) {
+        ped.walkPhase += dt * (4.8 + ped.speed * 1.2);
+        const sw = Math.sin(ped.walkPhase) * 0.42;
+        ped.rig.leftLeg.rotation.x = sw;
+        ped.rig.rightLeg.rotation.x = -sw;
+        ped.rig.leftArm.rotation.x = -sw * 0.65;
+        ped.rig.rightArm.rotation.x = sw * 0.65;
+      }
+    }
+
+    // Golden Sheru Bhai Junction Statue uplight shimmer (glows brightly at sunset & night!)
+    if (this.goldenStatueRig) {
+      const phase = getTimeOfDayPhase(this.timeOfDay);
+      const baseGlow = phase === 'night' ? 1.55 : phase === 'sunset' ? 1.15 : 0.72;
+      this.goldenStatueRig.uplightMat.emissiveIntensity =
+        baseGlow + Math.sin(this.elapsed * 2.4) * 0.14;
     }
 
     // Mischievous town goat trotting happily around junction / market

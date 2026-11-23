@@ -11,8 +11,10 @@ import {
   stepGroundVehiclePhysics,
 } from './vehiclePhysics';
 import {
+  TOWN_CROWD_ROUTES,
   TOWN_PALM_TREES,
   TOWN_ROADS,
+  TOWN_TRAFFIC_ROUTES,
   doesBoxOverlapAnyRoad,
   isPointOnAnyRoad,
 } from './roadNetwork';
@@ -65,6 +67,7 @@ import {
   NPCS,
   PARKING_BAYS,
   PLAYER_SPAWN,
+  RESORT_POOL_BOUNDS,
   WORLD_RADIUS,
   getDistrictAt,
 } from '../data/worldData';
@@ -605,16 +608,16 @@ test('Zero stores, shops, plots, ad boards, stands, or palm trees overlap any pa
   assert.ok(TOWN_ROADS.length >= 11, 'Expected full Kerala town road network');
 
   for (const b of BUILDINGS) {
-    const overlap = doesBoxOverlapAnyRoad(b.x, b.z, b.width / 2, b.depth / 2, 0.2);
+    const overlap = doesBoxOverlapAnyRoad(b.x, b.z, b.width, b.depth, b.rotationY, 0.2);
     assert.equal(
       overlap,
       null,
-      `Building "${b.id}" at (${b.x}, ${b.z}) overlaps paved road "${overlap}"`,
+      `Building "${b.id}" at (${b.x}, ${b.z}) w=${b.width} d=${b.depth} overlaps paved road "${overlap}"`,
     );
   }
 
   for (const p of EMPTY_PLOTS) {
-    const overlap = doesBoxOverlapAnyRoad(p.x, p.z, 3.8, 3.3, 0.2);
+    const overlap = doesBoxOverlapAnyRoad(p.x, p.z, p.width, p.depth, p.rotationY, 0.2);
     assert.equal(
       overlap,
       null,
@@ -623,7 +626,7 @@ test('Zero stores, shops, plots, ad boards, stands, or palm trees overlap any pa
   }
 
   for (const board of AD_BOARDS) {
-    const overlap = doesBoxOverlapAnyRoad(board.x, board.z, 1.4, 0.9, 0.15);
+    const overlap = doesBoxOverlapAnyRoad(board.x, board.z, 2.6, 1.4, board.rotationY, 0.15);
     assert.equal(
       overlap,
       null,
@@ -632,7 +635,7 @@ test('Zero stores, shops, plots, ad boards, stands, or palm trees overlap any pa
   }
 
   for (const stop of BUS_STOPS) {
-    const overlap = doesBoxOverlapAnyRoad(stop.x, stop.z, 1.8, 1.1, 0.1);
+    const overlap = doesBoxOverlapAnyRoad(stop.x, stop.z, 3.6, 2.0, stop.rotationY, 0.1);
     assert.equal(
       overlap,
       null,
@@ -641,13 +644,26 @@ test('Zero stores, shops, plots, ad boards, stands, or palm trees overlap any pa
   }
 
   for (const stand of AUTO_STANDS) {
-    const overlap = doesBoxOverlapAnyRoad(stand.x, stand.z, 1.6, 1.1, 0.1);
+    const overlap = doesBoxOverlapAnyRoad(stand.x, stand.z, 3.2, 2.0, stand.rotationY, 0.1);
     assert.equal(
       overlap,
       null,
       `Auto stand "${stand.id}" at (${stand.x}, ${stand.z}) overlaps paved road "${overlap}"`,
     );
   }
+
+  // Resort swimming pool bounds must also be 100% clear of all paved roads!
+  const poolW = RESORT_POOL_BOUNDS.maxX - RESORT_POOL_BOUNDS.minX;
+  const poolD = RESORT_POOL_BOUNDS.maxZ - RESORT_POOL_BOUNDS.minZ;
+  const poolOverlap = doesBoxOverlapAnyRoad(
+    RESORT_POOL_BOUNDS.centerX,
+    RESORT_POOL_BOUNDS.centerZ,
+    poolW,
+    poolD,
+    0,
+    0.2,
+  );
+  assert.equal(poolOverlap, null, `RESORT_POOL_BOUNDS overlaps road "${poolOverlap}"`);
 
   for (let i = 0; i < TOWN_PALM_TREES.length; i++) {
     const [px, pz] = TOWN_PALM_TREES[i];
@@ -686,6 +702,68 @@ test('Zero stores, shops, plots, ad boards, stands, or palm trees overlap any pa
   const crashTreated = resolveHospitalTreatment(state, 'airplane_crash');
   assert.ok(crashTreated.state.reputation >= state.reputation + 15);
   assert.match(crashTreated.enDoctorLine, /Runway 09\/27/i);
+});
+
+test('Airport & south roads are completely open, Golden Statue sits at Main Junction, townspeople span all districts, and traffic covers all 11 road routes', () => {
+  // 1. Airport Terminal & Kovalam Lighthouse Cafe must sit strictly OFF Main Junction Avenue (x ∈ [-5.5, 5.5])
+  const terminal = BUILDINGS.find((b) => b.id === 'airport_terminal')!;
+  const lighthouse = BUILDINGS.find((b) => b.id === 'kovalam_lighthouse_cafe')!;
+  assert.ok(
+    Math.abs(terminal.x) - terminal.width / 2 > 6,
+    `airport_terminal must be clear of Main Junction Avenue centerline, got x=${terminal.x} w=${terminal.width}`,
+  );
+  assert.ok(
+    Math.abs(lighthouse.x) - lighthouse.width / 2 > 6,
+    `kovalam_lighthouse_cafe must be clear of Main Junction Avenue centerline, got x=${lighthouse.x} w=${lighthouse.width}`,
+  );
+
+  // 2. Golden Statue pedestal collider exists at Main Junction (0, -4) and keeps ±3.2m traffic lanes clear
+  const colliders = getWorldColliders();
+  const statueCol = colliders.find((c) => c.id === 'junction_golden_statue');
+  assert.ok(statueCol, 'Golden Statue collider must exist at Main Junction');
+  assert.equal(resolveCircleWorldCollision(3.2, -4, 0.8, colliders).collided, false);
+  assert.equal(resolveCircleWorldCollision(-3.2, -4, 0.8, colliders).collided, false);
+
+  // 3. Walking townspeople cover the entire town (>= 40 routes across >= 10 districts), 100% clear of roads & buildings
+  assert.ok(
+    TOWN_CROWD_ROUTES.length >= 40,
+    `Expected >= 40 walking townspeople routes, got ${TOWN_CROWD_ROUTES.length}`,
+  );
+  const crowdDistricts = new Set(TOWN_CROWD_ROUTES.map((r) => r.district));
+  assert.ok(
+    crowdDistricts.size >= 10,
+    `Expected townspeople across >= 10 districts, got ${crowdDistricts.size}`,
+  );
+  for (const r of TOWN_CROWD_ROUTES) {
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+      const sx = r.ax + (r.bx - r.ax) * t;
+      const sz = r.az + (r.bz - r.az) * t;
+      assert.equal(
+        isPointOnAnyRoad(sx, sz, 0.45),
+        false,
+        `Town crowd route "${r.id}" sample (${sx}, ${sz}) steps onto a paved road!`,
+      );
+      const col = resolveCircleWorldCollision(sx, sz, 0.4, colliders);
+      assert.equal(
+        col.collided,
+        false,
+        `Town crowd route "${r.id}" sample (${sx}, ${sz}) collides with a building/obstacle!`,
+      );
+    }
+  }
+
+  // 4. Road traffic covers EVERY single road route in TOWN_ROADS (11/11) with >= 30 vehicles
+  assert.ok(
+    TOWN_TRAFFIC_ROUTES.length >= 30,
+    `Expected >= 30 road traffic vehicles, got ${TOWN_TRAFFIC_ROUTES.length}`,
+  );
+  const coveredRoadIds = new Set(TOWN_TRAFFIC_ROUTES.map((r) => r.roadId));
+  for (const road of TOWN_ROADS) {
+    assert.ok(
+      coveredRoadIds.has(road.id),
+      `Road route "${road.id}" (${road.name}) has no live traffic vehicles assigned!`,
+    );
+  }
 });
 
 

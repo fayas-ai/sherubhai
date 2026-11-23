@@ -159,8 +159,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
     // Roads (Main Cross + Outer Ring Boulevards matching TOWN_ROADS)
     ctx.fillStyle = '#474f57';
-    // mainRoadNS bounded cleanly between z = -104 and z = +108 (stops before Airport & Beach)
-    ctx.fillRect(cx - 3, cy - 104 * scale, 6, 212 * scale);
+    // mainRoadNS runs cleanly straight north into the Airport Apron (z = -126 to +108)
+    ctx.fillRect(cx - 3, cy - 126 * scale, 6, 234 * scale);
     ctx.fillRect(0, cy - 4 * scale - 3, w, 6);
     ctx.fillRect(0, cy - 32 * scale - 2, w, 4);
     ctx.fillRect(0, cy + 34 * scale - 2, w, 4);
@@ -171,6 +171,15 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     ctx.fillRect(cx + 80 * scale - 2, 0, 4, h);
     ctx.fillRect(cx - 108 * scale - 2, 0, 4, h);
     ctx.fillRect(cx + 108 * scale - 2, 0, 4, h);
+
+    // Golden Sheru Bhai Statue Roundabout Marker at Main Junction (0, -4)
+    ctx.fillStyle = '#ffd166';
+    ctx.beginPath();
+    ctx.arc(cx, cy - 4 * scale, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#92400e';
+    ctx.lineWidth = 1;
+    ctx.stroke();
 
     // Kerala International Airport Runway (09/27) & Apron strip at North end of town
     const rwX = cx + AIRPORT_RUNWAY.centerX * scale;

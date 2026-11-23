@@ -1578,17 +1578,20 @@ export function createBuildingModel(
     bayDoor.position.set(0, 2.35, def.depth / 2 + 0.08);
     group.add(bayDoor);
   } else if (def.category === 'resort') {
-    // Sparkling turquoise Resort Swimming Pool + tiled deck + umbrellas right in front!
+    // Sparkling turquoise Resort Swimming Pool + tiled deck + umbrellas on the west resort lawn
+    // (pool_resort at (58,48) rotY=PI -> local (+19, 0, -0.5) maps to world (39, 0, 48.5) matching RESORT_POOL_BOUNDS, 100% clear of southRoadEW!)
+    const px = 19;
+    const pz = -0.5;
     const deck = new THREE.Mesh(
-      new THREE.BoxGeometry(18, 0.18, 11),
+      new THREE.BoxGeometry(17.6, 0.18, 10.6),
       new THREE.MeshStandardMaterial({ color: 0xf5ebd6, roughness: 0.85 }),
     );
-    deck.position.set(0, 0.09, def.depth / 2 + 7.2);
+    deck.position.set(px, 0.09, pz);
     deck.receiveShadow = true;
     group.add(deck);
 
     const poolWater = new THREE.Mesh(
-      new THREE.BoxGeometry(15.2, 0.12, 8.2),
+      new THREE.BoxGeometry(15.6, 0.12, 8.6),
       new THREE.MeshStandardMaterial({
         color: 0x06b6d4,
         emissive: 0x0891b2,
@@ -1597,19 +1600,19 @@ export function createBuildingModel(
         metalness: 0.2,
       }),
     );
-    poolWater.position.set(0, 0.17, def.depth / 2 + 7.2);
+    poolWater.position.set(px, 0.17, pz);
     poolWater.name = 'resort_pool_water';
     group.add(poolWater);
 
-    // Colorful beach umbrellas & loungers
-    for (const ux of [-6.8, 6.8]) {
+    // Colorful beach umbrellas & loungers flanking the poolside deck
+    for (const ux of [px - 6.8, px + 6.8]) {
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.6, 6), goldMat);
-      pole.position.set(ux, 1.35, def.depth / 2 + 2.4);
+      pole.position.set(ux, 1.35, pz - 4.4);
       const canopy = new THREE.Mesh(
         new THREE.ConeGeometry(1.5, 0.65, 8),
-        new THREE.MeshStandardMaterial({ color: ux < 0 ? 0xf97316 : 0xec4899, roughness: 0.6 }),
+        new THREE.MeshStandardMaterial({ color: ux < px ? 0xf97316 : 0xec4899, roughness: 0.6 }),
       );
-      canopy.position.set(ux, 2.65, def.depth / 2 + 2.4);
+      canopy.position.set(ux, 2.65, pz - 4.4);
       group.add(pole, canopy);
     }
   } else if (def.category === 'home') {
@@ -2498,12 +2501,40 @@ export function createAirportComplexModel(maxAnisotropy: number): AirportComplex
     group.add(yLine);
   }
 
-  // North Airport Access Road linking North InfoPark Blvd (z = -72) straight to Airport Terminal (z = -108)
-  const accessRoad = new THREE.Mesh(new THREE.PlaneGeometry(12, 42), taxiMat);
-  accessRoad.rotation.x = -Math.PI / 2;
-  accessRoad.position.set(0, 0.033, -90);
-  accessRoad.receiveShadow = true;
-  group.add(accessRoad);
+  // Grand Overhead Airport Entrance Gantry Arch spanning over Main Junction Avenue (x=0, z=-104) with 8.2m clear drive-through height!
+  const archGroup = new THREE.Group();
+  archGroup.position.set(0, 0, -104);
+  const archPillarMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.45 });
+  const archTealMat = new THREE.MeshStandardMaterial({ color: 0x0f766e, roughness: 0.35, metalness: 0.25 });
+  const archGoldMat = new THREE.MeshStandardMaterial({ color: 0xf5c542, roughness: 0.22, metalness: 0.8 });
+  for (const sx of [-7.6, 7.6]) {
+    const pillar = new THREE.Mesh(new THREE.BoxGeometry(1.4, 8.6, 1.4), archPillarMat);
+    pillar.position.set(sx, 4.3, 0);
+    pillar.castShadow = true;
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.5, 1.7), archGoldMat);
+    cap.position.set(sx, 8.65, 0);
+    archGroup.add(pillar, cap);
+  }
+  const archBeam = new THREE.Mesh(new THREE.BoxGeometry(16.8, 1.6, 1.3), archTealMat);
+  archBeam.position.set(0, 8.8, 0);
+  archGroup.add(archBeam);
+  const archSignTex = createSignboardTexture(
+    'KERALA INTERNATIONAL AIRPORT · COK',
+    'വിമാനത്താവളം · RUNWAY 09/27 ENTRANCE',
+    true,
+    0x0f766e,
+    maxAnisotropy,
+  );
+  const archSignFront = new THREE.Mesh(
+    new THREE.BoxGeometry(14.8, 1.3, 0.16),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, map: archSignTex, roughness: 0.35 }),
+  );
+  archSignFront.position.set(0, 8.8, 0.72);
+  const archSignBack = archSignFront.clone();
+  archSignBack.position.z = -0.72;
+  archSignBack.rotation.y = Math.PI;
+  archGroup.add(archSignFront, archSignBack);
+  group.add(archGroup);
 
   // 3. Runway Edge, Green Threshold & Red End Lights
   const runwayLightMat = new THREE.MeshStandardMaterial({
@@ -2544,9 +2575,9 @@ export function createAirportComplexModel(maxAnisotropy: number): AirportComplex
     group.add(westLamp, eastLamp);
   }
 
-  // 4. Air Traffic Control (ATC) Tower (West of Terminal at x: -34, z: -113)
+  // 4. Air Traffic Control (ATC) Tower (West of relocated Terminal at x: -52, z: -113)
   const atc = new THREE.Group();
-  atc.position.set(-34, 0, -113);
+  atc.position.set(-52, 0, -113);
   const whiteMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.45 });
   const tealMat = new THREE.MeshStandardMaterial({ color: 0x0f766e, roughness: 0.4, metalness: 0.25 });
   const goldMat = new THREE.MeshStandardMaterial({ color: 0xf5c542, roughness: 0.28, metalness: 0.72 });
@@ -2616,9 +2647,9 @@ export function createAirportComplexModel(maxAnisotropy: number): AirportComplex
   atc.add(atcSign);
   group.add(atc);
 
-  // 5. GHOP Airways Aviation Hangar (East of Terminal at x: 38, z: -113)
+  // 5. GHOP Airways Aviation Hangar (East of Airport Boulevard at x: 34, z: -113)
   const hangar = new THREE.Group();
-  hangar.position.set(38, 0, -113);
+  hangar.position.set(34, 0, -113);
   const hangarMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.55, metalness: 0.25 });
   const hangarDarkMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.7 });
 
@@ -2686,5 +2717,290 @@ export function createAirportComplexModel(maxAnisotropy: number): AirportComplex
 
   return { group, radarDish, windsock, beaconMat, runwayLightMat };
 }
+
+/**
+ * Iconic 24K Polished Golden Sheru Bhai Lion-King Statue Monument at Main Junction (0, -4).
+ * Sits on a tiered marble & Kerala brass octagonal roundabout pedestal with warm golden uplights.
+ */
+export function createGoldenJunctionStatue(maxAnisotropy: number): {
+  group: THREE.Group;
+  statueSpinPivot: THREE.Group;
+  uplightMat: THREE.MeshStandardMaterial;
+} {
+  const group = new THREE.Group();
+
+  const graniteMat = new THREE.MeshStandardMaterial({ color: 0x262b30, roughness: 0.72, metalness: 0.15 });
+  const marbleMat = new THREE.MeshStandardMaterial({ color: 0xf4efe3, roughness: 0.42, metalness: 0.06 });
+  const grassMat = new THREE.MeshStandardMaterial({ color: 0x2d7a40, roughness: 0.86 });
+  const goldMat = new THREE.MeshStandardMaterial({
+    color: 0xffd23f,
+    roughness: 0.18,
+    metalness: 0.92,
+    emissive: 0x6b4700,
+    emissiveIntensity: 0.24,
+  });
+  const darkGoldMat = new THREE.MeshStandardMaterial({
+    color: 0xd49b1a,
+    roughness: 0.24,
+    metalness: 0.88,
+    emissive: 0x4a2f00,
+    emissiveIntensity: 0.18,
+  });
+  const crownGemMat = new THREE.MeshStandardMaterial({
+    color: 0xe11d48,
+    emissive: 0x9f1239,
+    emissiveIntensity: 0.55,
+    roughness: 0.15,
+    metalness: 0.4,
+  });
+  const uplightMat = new THREE.MeshStandardMaterial({
+    color: 0xfff3b0,
+    emissive: 0xffc83d,
+    emissiveIntensity: 1.1,
+    roughness: 0.2,
+  });
+
+  // 1. Roundabout Curbed Plinth + Tropical Planter Ring
+  const outerCurb = new THREE.Mesh(new THREE.CylinderGeometry(2.15, 2.35, 0.34, 16), graniteMat);
+  outerCurb.position.y = 0.17;
+  outerCurb.receiveShadow = true;
+  group.add(outerCurb);
+
+  const planterGrass = new THREE.Mesh(new THREE.CylinderGeometry(1.92, 2.02, 0.16, 16), grassMat);
+  planterGrass.position.y = 0.38;
+  group.add(planterGrass);
+
+  // Ornamental marigold flower ring + 4 glowing golden uplight bollards
+  const flowerColors = [0xf59e0b, 0xef4444, 0xfacc15, 0xf97316];
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    const fl = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.16, 0),
+      new THREE.MeshStandardMaterial({ color: flowerColors[i % flowerColors.length], roughness: 0.65 }),
+    );
+    fl.position.set(Math.cos(a) * 1.65, 0.5, Math.sin(a) * 1.65);
+    group.add(fl);
+  }
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    const bx = Math.cos(a) * 1.92;
+    const bz = Math.sin(a) * 1.92;
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.62, 8), darkGoldMat);
+    post.position.set(bx, 0.66, bz);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 8), uplightMat);
+    bulb.position.set(bx, 1.0, bz);
+    group.add(post, bulb);
+  }
+
+  // 2. Stepped White Marble & Gold Pedestal
+  const step1 = new THREE.Mesh(new THREE.CylinderGeometry(1.38, 1.52, 0.42, 8), marbleMat);
+  step1.position.y = 0.64;
+  step1.castShadow = true;
+  group.add(step1);
+
+  const trim1 = new THREE.Mesh(new THREE.CylinderGeometry(1.42, 1.42, 0.1, 8), goldMat);
+  trim1.position.y = 0.86;
+  group.add(trim1);
+
+  const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.15, 1.48, 8), marbleMat);
+  pedestal.position.y = 1.62;
+  pedestal.castShadow = true;
+  group.add(pedestal);
+
+  const capGold = new THREE.Mesh(new THREE.CylinderGeometry(1.12, 1.0, 0.22, 8), goldMat);
+  capGold.position.y = 2.44;
+  capGold.castShadow = true;
+  group.add(capGold);
+
+  // Bilingual Gold Plaque on South & North faces of Pedestal
+  const plaqueTex = createSignboardTexture(
+    'SHERU BHAI GOLDEN STATUE',
+    'ഷേരു ഭായ് സുവർണ്ണ പ്രതിമ · JUNCTION',
+    true,
+    0xd4a12a,
+    maxAnisotropy,
+  );
+  const plaqueMat = new THREE.MeshStandardMaterial({ color: 0xffffff, map: plaqueTex, roughness: 0.3, metalness: 0.4 });
+  const plaqueFront = new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.46, 0.08), plaqueMat);
+  plaqueFront.position.set(0, 1.62, 1.02);
+  const plaqueBack = plaqueFront.clone();
+  plaqueBack.position.z = -1.02;
+  plaqueBack.rotation.y = Math.PI;
+  group.add(plaqueFront, plaqueBack);
+
+  // 3. Towering 24K Solid Gold Sheru Bhai Heroic Lion-King Statue (faces South toward Player Spawn!)
+  const statueSpinPivot = new THREE.Group();
+  statueSpinPivot.position.y = 2.55;
+  group.add(statueSpinPivot);
+
+  const s = 1.48; // Heroic monumental scale (~3.5m tall figure -> total monument ~6.2m!)
+  const figure = new THREE.Group();
+  figure.scale.setScalar(s);
+  statueSpinPivot.add(figure);
+
+  // Heroic stance legs & plinth base plate
+  const footPlate = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.62, 0.12, 10), darkGoldMat);
+  footPlate.position.y = 0.06;
+  figure.add(footPlate);
+
+  for (const lx of [-0.2, 0.2]) {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.12, 0.72, 10), goldMat);
+    leg.position.set(lx, 0.46, 0);
+    leg.castShadow = true;
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.14, 0.36), darkGoldMat);
+    boot.position.set(lx, 0.14, 0.06);
+    figure.add(leg, boot);
+  }
+
+  // Broad royal suit torso & sculpted golden cape
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.32, 0.88, 12), goldMat);
+  torso.position.y = 1.2;
+  torso.scale.set(1.06, 1, 0.74);
+  torso.castShadow = true;
+  figure.add(torso);
+
+  const lapel = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.46, 0.1), darkGoldMat);
+  lapel.position.set(0, 1.32, 0.28);
+  figure.add(lapel);
+
+  const cape = new THREE.Mesh(new THREE.BoxGeometry(0.76, 1.05, 0.08), darkGoldMat);
+  cape.position.set(0, 1.05, -0.34);
+  cape.rotation.x = 0.16;
+  cape.castShadow = true;
+  figure.add(cape);
+
+  // Left arm resting confidently on hip; Right arm raised heroically holding a Golden GHOP Trophy/Scepter!
+  const leftArm = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.1, 0.68, 8), goldMat);
+  leftArm.position.set(-0.5, 1.24, 0.04);
+  leftArm.rotation.z = 0.24;
+  figure.add(leftArm);
+
+  const rightArm = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.1, 0.78, 8), goldMat);
+  rightArm.position.set(0.56, 1.66, 0.12);
+  rightArm.rotation.z = -0.58;
+  rightArm.rotation.x = -0.32;
+  rightArm.castShadow = true;
+  figure.add(rightArm);
+
+  const scepter = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.65, 6), darkGoldMat);
+  scepter.position.set(0.84, 2.04, 0.22);
+  const scepterOrb = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), goldMat);
+  scepterOrb.position.set(0.84, 2.4, 0.22);
+  figure.add(scepter, scepterOrb);
+
+  // Sculpted Golden Lion Head, Majestic Mane, Sunglasses & Royal Crown
+  const mane = new THREE.Mesh(new THREE.DodecahedronGeometry(0.56, 1), darkGoldMat);
+  mane.position.set(0, 1.98, -0.04);
+  mane.castShadow = true;
+  figure.add(mane);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.36, 12, 10), goldMat);
+  head.position.set(0, 1.98, 0.12);
+  figure.add(head);
+
+  const snout = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.2, 0.24), goldMat);
+  snout.position.set(0, 1.9, 0.4);
+  figure.add(snout);
+
+  const shades = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.12, 0.12), graniteMat);
+  shades.position.set(0, 2.04, 0.42);
+  figure.add(shades);
+
+  // Royal Golden Crown with Ruby Center Gem
+  const crownBand = new THREE.Mesh(new THREE.CylinderGeometry(0.29, 0.24, 0.2, 8), goldMat);
+  crownBand.position.set(0, 2.42, 0.06);
+  figure.add(crownBand);
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.18, 5), goldMat);
+    spike.position.set(Math.cos(a) * 0.22, 2.58, 0.06 + Math.sin(a) * 0.22);
+    figure.add(spike);
+  }
+  const ruby = new THREE.Mesh(new THREE.OctahedronGeometry(0.08, 0), crownGemMat);
+  ruby.position.set(0, 2.46, 0.31);
+  figure.add(ruby);
+
+  return { group, statueSpinPivot, uplightMat };
+}
+
+// Shared zero-overhead geometries for 48+ lightweight walking Kerala townspeople
+const _pedLegGeo = new THREE.BoxGeometry(0.16, 0.68, 0.18);
+const _pedSkirtGeo = new THREE.CylinderGeometry(0.22, 0.28, 0.72, 8);
+const _pedTorsoGeo = new THREE.BoxGeometry(0.48, 0.64, 0.26);
+const _pedArmGeo = new THREE.BoxGeometry(0.13, 0.56, 0.14);
+const _pedHeadGeo = new THREE.SphereGeometry(0.21, 9, 8);
+const _pedHairGeo = new THREE.SphereGeometry(0.22, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.58);
+const _pedHairMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.85 });
+
+export interface TownPedestrianRig {
+  root: THREE.Group;
+  leftLeg: THREE.Group;
+  rightLeg: THREE.Group;
+  leftArm: THREE.Group;
+  rightArm: THREE.Group;
+}
+
+export function createTownPedestrianModel(
+  shirtColor: number,
+  lowerColor: number,
+  skinColor: number,
+  isSaree = false,
+): TownPedestrianRig {
+  const root = new THREE.Group();
+  const shirtMat = new THREE.MeshStandardMaterial({ color: shirtColor, roughness: 0.72 });
+  const lowerMat = new THREE.MeshStandardMaterial({ color: lowerColor, roughness: 0.75 });
+  const skinMat = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.68 });
+
+  const leftLeg = new THREE.Group();
+  leftLeg.position.set(-0.12, 0.7, 0);
+  const rightLeg = new THREE.Group();
+  rightLeg.position.set(0.12, 0.7, 0);
+
+  if (isSaree) {
+    const skirt = new THREE.Mesh(_pedSkirtGeo, lowerMat);
+    skirt.position.y = 0.38;
+    root.add(skirt);
+    // Subtle ankle/foot indicators on leg pivots so walking still animates crisply
+    const lFoot = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.12, 0.2), skinMat);
+    lFoot.position.set(0, -0.62, 0.04);
+    leftLeg.add(lFoot);
+    const rFoot = lFoot.clone();
+    rightLeg.add(rFoot);
+  } else {
+    const lMesh = new THREE.Mesh(_pedLegGeo, lowerMat);
+    lMesh.position.y = -0.34;
+    leftLeg.add(lMesh);
+    const rMesh = new THREE.Mesh(_pedLegGeo, lowerMat);
+    rMesh.position.y = -0.34;
+    rightLeg.add(rMesh);
+  }
+  root.add(leftLeg, rightLeg);
+
+  const torso = new THREE.Mesh(_pedTorsoGeo, shirtMat);
+  torso.position.y = 1.04;
+  root.add(torso);
+
+  const leftArm = new THREE.Group();
+  leftArm.position.set(-0.31, 1.3, 0);
+  const laMesh = new THREE.Mesh(_pedArmGeo, skinMat);
+  laMesh.position.y = -0.26;
+  leftArm.add(laMesh);
+
+  const rightArm = new THREE.Group();
+  rightArm.position.set(0.31, 1.3, 0);
+  const raMesh = new THREE.Mesh(_pedArmGeo, skinMat);
+  raMesh.position.y = -0.26;
+  rightArm.add(raMesh);
+  root.add(leftArm, rightArm);
+
+  const head = new THREE.Mesh(_pedHeadGeo, skinMat);
+  head.position.y = 1.56;
+  const hair = new THREE.Mesh(_pedHairGeo, _pedHairMat);
+  hair.position.y = 1.59;
+  root.add(head, hair);
+
+  return { root, leftLeg, rightLeg, leftArm, rightArm };
+}
+
 
 
