@@ -4,6 +4,20 @@ export type GraphicsQuality = 'low' | 'medium' | 'high';
 
 export type TimeOfDayPhase = 'day' | 'sunset' | 'night';
 
+export type WeatherCondition = 'sunny' | 'rain' | 'mist';
+
+export interface WeatherHudState {
+  condition: WeatherCondition;
+  previousCondition: WeatherCondition;
+  transitionId: number;
+  cycleProgress: number; // 0..1 progress until next dynamic weather shift
+  intensity: number; // 0..1 fade-in strength
+  label: string;
+  mlLabel: string;
+  temperatureC: number;
+  windKmh: number;
+}
+
 export type ShopCategory =
   | 'tea_shop'
   | 'grocery'
@@ -506,6 +520,7 @@ export interface HudSnapshot {
   nearby: NearbyInteractable | null;
   timePhase: TimeOfDayPhase;
   timeOfDay: number;
+  weather: WeatherHudState;
   npcs: { id: string; x: number; z: number; isBoss?: boolean }[];
   vehicles: { id: string; x: number; z: number; isEmergency?: boolean; isAircraft?: boolean }[];
   trafficLightState?: 'ns_green' | 'ew_green' | 'yellow';

@@ -39,6 +39,7 @@ import {
 import { AUTO_DESTINATIONS } from '../data/vehiclesData';
 import { formatGhop, getDailyStreakTier } from '../game/gameLogic';
 import { AIRPORT_RUNWAY } from '../game/vehiclePhysics';
+import { WeatherHUD } from './WeatherHUD';
 
 interface GameHUDProps {
   hud: HudSnapshot;
@@ -61,6 +62,7 @@ interface GameHUDProps {
   onParkVehicle: () => void;
   onTriggerRandomEvent: () => void;
   onCycleTime: () => void;
+  onCycleWeather: () => void;
   onToggleMute: () => void;
   onPause: () => void;
   onInteractClick: () => void;
@@ -100,6 +102,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onParkVehicle,
   onTriggerRandomEvent,
   onCycleTime,
+  onCycleWeather,
   onToggleMute,
   onPause,
   onInteractClick,
@@ -378,9 +381,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   return (
     <div className="fixed inset-0 z-10 pointer-events-none flex flex-col justify-between p-2.5 sm:p-4">
       {/* TOP BAR: Compact World-Matched Kerala Brass & Emerald Perimeter Clusters */}
-      <div className="flex items-start justify-between gap-2">
+      <div className="flex items-start justify-between gap-1.5 sm:gap-2">
         {/* Top-Left: GHOP Unlimited Balance + Location + Active Level Objective */}
-        <div className="flex flex-col gap-1.5 max-w-[195px] sm:max-w-[330px]">
+        <div className="flex flex-col gap-1.5 min-w-0 max-w-[168px] sm:max-w-[320px]">
           <div className="pointer-events-auto rounded-xl bg-[#111d17]/92 border-2 border-[#d4a12a] px-2.5 sm:px-3.5 py-1.5 sm:py-2 shadow-[0_6px_18px_rgba(0,0,0,0.45)]">
             <div className="flex items-center justify-between gap-2 sm:gap-3">
               <div className="min-w-0">
@@ -513,22 +516,23 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
         </div>
 
-        {/* Top-Right: Compact Action & Utility Buttons */}
-        <div className="pointer-events-auto flex flex-wrap justify-end gap-1 sm:gap-1.5 max-w-[175px] sm:max-w-[540px] lg:max-w-none">
-          <button
-            type="button"
-            tabIndex={-1}
-            data-testid="hud-call-108"
-            aria-label="Call 108 Emergency Ambulance"
-            onClick={(e) => {
-              e.currentTarget.blur();
-              onCallEmergency108();
-            }}
-            className="flex items-center gap-1 px-2 sm:px-2.5 py-2 rounded-lg bg-[#b91c1c] hover:bg-[#dc2626] border border-[#fca5a5] text-white text-xs font-extrabold shadow cursor-pointer"
-          >
-            <Siren className="w-4 h-4 text-[#fde047]" />
-            <span className="hidden sm:inline">108</span>
-          </button>
+        {/* Top-Right: Compact Action Buttons + Dedicated Weather HUD directly next to the Circular Minimap */}
+        <div className="flex flex-col-reverse xl:flex-row items-end xl:items-start justify-end gap-1.5 sm:gap-2 min-w-0 max-w-[196px] sm:max-w-none">
+          <div className="pointer-events-auto flex flex-wrap justify-end gap-1 sm:gap-1.5 max-w-[184px] sm:max-w-[460px] xl:max-w-[540px]">
+            <button
+              type="button"
+              tabIndex={-1}
+              data-testid="hud-call-108"
+              aria-label="Call 108 Emergency Ambulance"
+              onClick={(e) => {
+                e.currentTarget.blur();
+                onCallEmergency108();
+              }}
+              className="flex items-center gap-1 px-2 sm:px-2.5 py-2 rounded-lg bg-[#b91c1c] hover:bg-[#dc2626] border border-[#fca5a5] text-white text-xs font-extrabold shadow cursor-pointer"
+            >
+              <Siren className="w-4 h-4 text-[#fde047]" />
+              <span className="hidden sm:inline">108</span>
+            </button>
 
           <button
             type="button"
@@ -677,18 +681,40 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             {settings.muted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
           </button>
 
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-label="Pause Game"
-            onClick={(e) => {
-              e.currentTarget.blur();
-              onPause();
-            }}
-            className="p-2 rounded-lg bg-[#111d17]/92 hover:bg-[#1c3227] border border-[#d4a12a]/70 text-[#fff8e7] shadow cursor-pointer"
-          >
-            <Pause className="w-4 h-4" />
-          </button>
+            <button
+              type="button"
+              tabIndex={-1}
+              aria-label="Pause Game"
+              onClick={(e) => {
+                e.currentTarget.blur();
+                onPause();
+              }}
+              className="p-2 rounded-lg bg-[#111d17]/92 hover:bg-[#1c3227] border border-[#d4a12a]/70 text-[#fff8e7] shadow cursor-pointer"
+            >
+              <Pause className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Top-of-Screen Weather HUD directly next to the Circular Town Minimap */}
+          <div className="flex items-start gap-1.5 sm:gap-2.5 shrink-0 max-w-full">
+            <WeatherHUD
+              weather={hud.weather}
+              timePhase={hud.timePhase}
+              onCycleWeather={onCycleWeather}
+            />
+            <div className="pointer-events-auto flex flex-col items-center gap-0.5 shrink-0">
+              <canvas
+                ref={minimapRef}
+                data-testid="town-minimap"
+                width={116}
+                height={116}
+                className="w-12 h-12 sm:w-[116px] sm:h-[116px] rounded-full shadow-[0_6px_18px_rgba(0,0,0,0.55)]"
+              />
+              <span className="hidden sm:inline text-[9px] font-bold tracking-wider uppercase text-[#f5ecd6]/90 hud-text-stroke">
+                + Hosp · Red=108 · Gold=Statue
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1094,19 +1120,6 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               )}
             </div>
           )}
-
-          {/* Circular Town Minimap */}
-          <div className="hidden sm:flex flex-col items-center gap-1">
-            <canvas
-              ref={minimapRef}
-              width={136}
-              height={136}
-              className="rounded-full shadow-[0_6px_18px_rgba(0,0,0,0.55)]"
-            />
-            <span className="text-[10px] font-bold tracking-wider uppercase text-[#f5ecd6]/90 hud-text-stroke">
-              + Hospital · Red = 108 · Cyan = Pool
-            </span>
-          </div>
         </div>
       </div>
     </div>

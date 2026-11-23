@@ -54,6 +54,11 @@ import {
   upgradeOwnedBusiness,
 } from './game/gameLogic';
 import {
+  buildWeatherHudState,
+  createInitialWeatherState,
+  getWeatherVisualConfig,
+} from './game/weatherLogic';
+import {
   loadProgressFromIndexedDb,
   saveCharacterProfileToIndexedDb,
   saveProgressToIndexedDb,
@@ -123,6 +128,7 @@ export default function App() {
     nearby: null,
     timePhase: 'day',
     timeOfDay: 0.28,
+    weather: buildWeatherHudState(createInitialWeatherState('sunny'), 'day'),
     npcs: [],
     vehicles: [],
   });
@@ -835,6 +841,14 @@ export default function App() {
           onCycleTime={() => {
             const nextTime = worldRef.current?.cycleTimeOfDay() ?? 0.28;
             progressRef.current = { ...progressRef.current, timeOfDay: nextTime };
+          }}
+          onCycleWeather={() => {
+            const nextCond = worldRef.current?.cycleWeather();
+            if (nextCond) {
+              const cfg = getWeatherVisualConfig(nextCond, hud.timePhase);
+              soundEngine.playInteract();
+              showToast(`Weather shifted: ${cfg.label} (${cfg.mlLabel})`);
+            }
           }}
           onToggleMute={() => setSettings((s) => ({ ...s, muted: !s.muted }))}
           onPause={() => {

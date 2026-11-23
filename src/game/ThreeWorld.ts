@@ -19,6 +19,7 @@ import {
   OwnedBusinessRecord,
   Vec2,
   VehicleDef,
+  WeatherCondition,
 } from '../types/game';
 import {
   AD_BOARDS,
@@ -101,6 +102,14 @@ import {
   createRoadTexture,
   createSignboardTexture,
 } from './textures';
+import {
+  WeatherControllerState,
+  buildWeatherHudState,
+  createInitialWeatherState,
+  cycleWeatherCondition,
+  getWeatherVisualConfig,
+  stepWeatherCycle,
+} from './weatherLogic';
 import { soundEngine } from './audio';
 
 // Module-level zero-GC scratch helpers
@@ -114,6 +123,7 @@ const _skyDay = new THREE.Color(0x88ccf1);
 const _skySunset = new THREE.Color(0xf29f67);
 const _skyNight = new THREE.Color(0x111a2c);
 const _skyWork = new THREE.Color();
+const _weatherSky = new THREE.Color();
 
 interface ParticleSlot {
   active: boolean;
@@ -416,6 +426,10 @@ export class ThreeWorld {
   private timeOfDay = 0.28;
   private lastLightingPhase = '';
   private dayCyclePaused = false;
+  private weatherState: WeatherControllerState = createInitialWeatherState('sunny');
+  private rainLines: THREE.LineSegments | null = null;
+  private rainMat: THREE.LineBasicMaterial | null = null;
+  private rainOffsets: Float32Array | null = null;
   private elapsed = 0;
   private lastTickTime = 0;
   private hudThrottle = 0;
@@ -521,6 +535,9 @@ export class ThreeWorld {
     this.sunLight.shadow.bias = -0.0005;
     this.sunLight.shadow.normalBias = 0.03;
     this.scene.add(this.sunLight);
+
+    // Lightweight single-draw-call 3D Monsoon Rain streaks (visible only when weather === 'rain')
+    this.initRainSystem();
 
     // Build Kerala World Geometry
     this.buildEnvironment(initialProgress);
@@ -1753,6 +1770,47 @@ export class ThreeWorld {
     return this.timeOfDay;
   }
 
+  public cycleWeather(target?: WeatherCondition): WeatherCondition {
+    this.weatherState = cycleWeatherCondition(this.weatherState, target);
+    this.hudThrottle = 1; // Immediately push new transitionId to WeatherHUD on next tick!
+    return this.weatherState.condition;
+  }
+
+  private initRainSystem() {
+    const dropCount = 220;
+    const positions = new Float32Array(dropCount * 6);
+    const offsets = new Float32Array(dropCount * 3);
+    for (let i = 0; i < dropCount; i++) {
+      const rx = (Math.random() - 0.5) * 56;
+      const ry = Math.random() * 24;
+      const rz = (Math.random() - 0.5) * 56;
+      offsets[i * 3] = rx;
+      offsets[i * 3 + 1] = ry;
+      offsets[i * 3 + 2] = rz;
+      positions[i * 6] = rx;
+      positions[i * 6 + 1] = ry;
+      positions[i * 6 + 2] = rz;
+      positions[i * 6 + 3] = rx - 0.14;
+      positions[i * 6 + 4] = ry - 0.88;
+      positions[i * 6 + 5] = rz;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.LineBasicMaterial({
+      color: 0xbae6fd,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+    });
+    const lines = new THREE.LineSegments(geo, mat);
+    lines.frustumCulled = false;
+    lines.visible = false;
+    this.scene.add(lines);
+    this.rainLines = lines;
+    this.rainMat = mat;
+    this.rainOffsets = offsets;
+  }
+
   public triggerCelebration(kind: 'celebrate' | 'flex' | 'laugh' = 'celebrate') {
     this.reactionType = kind;
     this.reactionTimer = 1.6;
@@ -2237,33 +2295,91 @@ export class ThreeWorld {
   };
 
   private updateLighting(dt: number) {
-    if (this.mode === 'playing' && !this.modalOpen && !this.dayCyclePaused) {
+    const canAdvanceCycle = this.mode === 'playing' && !this.modalOpen && !this.dayCyclePaused;
+    if (canAdvanceCycle) {
       this.timeOfDay = (this.timeOfDay + dt * 0.0022) % 1;
     }
+    const weatherStep = stepWeatherCycle(this.weatherState, dt, canAdvanceCycle);
+    this.weatherState = weatherStep.state;
+    if (weatherStep.changed) {
+      // Immediately flush HUD snapshot on dynamic weather transitions so WeatherHUD animates right on cue!
+      this.hudThrottle = 1;
+    }
+
     const phase = getTimeOfDayPhase(this.timeOfDay);
+    const weatherCfg = getWeatherVisualConfig(this.weatherState.condition, phase);
     const angle = this.timeOfDay * Math.PI * 2;
     this.sunLight.position.set(Math.cos(angle) * 65, Math.max(12, Math.sin(angle) * 75), 32);
 
+    let baseSunIntensity = 1.95;
+    let baseHemiIntensity = 0.88;
     if (phase === 'day') {
       _skyWork.copy(_skyDay);
       this.sunLight.color.setHex(0xfff1d6);
-      this.sunLight.intensity = 1.95;
-      this.hemiLight.intensity = 0.88;
+      baseSunIntensity = 1.95;
+      baseHemiIntensity = 0.88;
     } else if (phase === 'sunset') {
       _skyWork.copy(_skySunset);
       this.sunLight.color.setHex(0xff9f5a);
-      this.sunLight.intensity = 1.45;
-      this.hemiLight.intensity = 0.62;
+      baseSunIntensity = 1.45;
+      baseHemiIntensity = 0.62;
     } else {
       _skyWork.copy(_skyNight);
       this.sunLight.color.setHex(0x7aa2f7);
-      this.sunLight.intensity = 0.52;
-      this.hemiLight.intensity = 0.38;
+      baseSunIntensity = 0.52;
+      baseHemiIntensity = 0.38;
     }
 
-    (this.scene.background as THREE.Color).lerp(_skyWork, 1 - Math.exp(-3 * dt));
-    if (this.scene.fog) {
+    // Apply dynamic weather atmospheric tint, sun dimming, and fog density
+    if (weatherCfg.skyBlend > 0) {
+      _weatherSky.setHex(weatherCfg.skyHex);
+      _skyWork.lerp(_weatherSky, weatherCfg.skyBlend * this.weatherState.intensity);
+    }
+    const lightLerp = 1 - Math.exp(-3 * dt);
+    const targetSun = baseSunIntensity * weatherCfg.sunIntensityMult;
+    const targetHemi = baseHemiIntensity * weatherCfg.hemiIntensityMult;
+    this.sunLight.intensity += (targetSun - this.sunLight.intensity) * lightLerp;
+    this.hemiLight.intensity += (targetHemi - this.hemiLight.intensity) * lightLerp;
+
+    (this.scene.background as THREE.Color).lerp(_skyWork, lightLerp);
+    if (this.scene.fog instanceof THREE.Fog) {
       this.scene.fog.color.copy(this.scene.background as THREE.Color);
+      this.scene.fog.near += (weatherCfg.fogNear - this.scene.fog.near) * lightLerp;
+      this.scene.fog.far += (weatherCfg.fogFar - this.scene.fog.far) * lightLerp;
+    }
+
+    // Update 3D falling Monsoon Rain streaks around the player when raining
+    if (this.rainLines && this.rainMat && this.rainOffsets) {
+      const showRain = this.weatherState.condition === 'rain' && !this.inHospital;
+      this.rainLines.visible = showRain;
+      if (showRain) {
+        this.rainMat.opacity = 0.45 * this.weatherState.intensity;
+        this.rainLines.position.set(this.playerX, Math.max(0, this.playerY - 2), this.playerZ);
+        const posAttr = this.rainLines.geometry.getAttribute('position') as THREE.BufferAttribute;
+        const arr = posAttr.array as Float32Array;
+        const dropCount = this.rainOffsets.length / 3;
+        const fallSpeed = 24 * dt;
+        const windDrift = 3.2 * dt;
+        for (let i = 0; i < dropCount; i++) {
+          let rx = this.rainOffsets[i * 3] - windDrift;
+          let ry = this.rainOffsets[i * 3 + 1] - fallSpeed;
+          const rz = this.rainOffsets[i * 3 + 2];
+          if (ry < 0) {
+            ry += 24;
+            rx = ((rx + 28) % 56 + 56) % 56 - 28;
+          }
+          if (rx < -28) rx += 56;
+          this.rainOffsets[i * 3] = rx;
+          this.rainOffsets[i * 3 + 1] = ry;
+          arr[i * 6] = rx;
+          arr[i * 6 + 1] = ry;
+          arr[i * 6 + 2] = rz;
+          arr[i * 6 + 3] = rx - 0.14;
+          arr[i * 6 + 4] = ry - 0.88;
+          arr[i * 6 + 5] = rz;
+        }
+        posAttr.needsUpdate = true;
+      }
     }
 
     if (phase !== this.lastLightingPhase) {
@@ -3597,6 +3713,7 @@ export class ThreeWorld {
       nearby: this.activeVehicleId ? null : this.findNearestInteractable(),
       timePhase: getTimeOfDayPhase(this.timeOfDay),
       timeOfDay: this.timeOfDay,
+      weather: buildWeatherHudState(this.weatherState, getTimeOfDayPhase(this.timeOfDay)),
       npcs: this.liveNpcs.map((n) => ({ id: n.id, x: n.x, z: n.z, isBoss: n.isBoss })),
       vehicles: [
         ...this.liveVehicles.map((v) => ({

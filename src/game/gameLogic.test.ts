@@ -19,6 +19,13 @@ import {
   isPointOnAnyRoad,
 } from './roadNetwork';
 import {
+  buildWeatherHudState,
+  createInitialWeatherState,
+  cycleWeatherCondition,
+  getWeatherVisualConfig,
+  stepWeatherCycle,
+} from './weatherLogic';
+import {
   HOSPITAL_INTERIOR_BOUNDS,
   applyDialogueChoice,
   buildNpcDialogue,
@@ -764,6 +771,53 @@ test('Airport & south roads are completely open, Golden Statue sits at Main Junc
       `Road route "${road.id}" (${road.name}) has no live traffic vehicles assigned!`,
     );
   }
+});
+
+test('Dynamic weather cycling advances Sunny -> Rain -> Mist -> Sunny, increments transitionId for HUD animations, and updates atmospheric visuals', () => {
+  let w = createInitialWeatherState('sunny', 20);
+  assert.equal(w.condition, 'sunny');
+  assert.equal(w.transitionId, 0);
+
+  // Advancing 10s (in two 5s steps) keeps Sunny and updates cycleProgress to 0.5
+  let step = stepWeatherCycle(w, 5, true);
+  assert.equal(step.changed, false);
+  step = stepWeatherCycle(step.state, 5, true);
+  assert.equal(step.changed, false);
+  assert.equal(step.state.condition, 'sunny');
+  assert.equal(buildWeatherHudState(step.state, 'day').cycleProgress, 0.5);
+
+  // Crossing the 20s phase boundary triggers dynamic shift to Monsoon Rain & bumps transitionId
+  step = stepWeatherCycle(step.state, 5, true);
+  assert.equal(step.changed, false);
+  const toRain = stepWeatherCycle(step.state, 5, true);
+  assert.equal(toRain.changed, true);
+  assert.equal(toRain.state.condition, 'rain');
+  assert.equal(toRain.state.previousCondition, 'sunny');
+  assert.equal(toRain.state.transitionId, 1);
+
+  // Manual cycle triggers Mist with incremented transitionId
+  const toMist = cycleWeatherCondition(toRain.state);
+  assert.equal(toMist.condition, 'mist');
+  assert.equal(toMist.transitionId, 2);
+
+  // Cycling again wraps cleanly back to Sunny
+  const backSunny = cycleWeatherCondition(toMist);
+  assert.equal(backSunny.condition, 'sunny');
+  assert.equal(backSunny.transitionId, 3);
+
+  // Atmospheric visuals differ sharply across Sunny, Rain, and Mist
+  const sunnyCfg = getWeatherVisualConfig('sunny', 'day');
+  const rainCfg = getWeatherVisualConfig('rain', 'day');
+  const mistCfg = getWeatherVisualConfig('mist', 'day');
+  assert.equal(rainCfg.rainDensity, 1);
+  assert.equal(sunnyCfg.rainDensity, 0);
+  assert.ok(mistCfg.fogFar < rainCfg.fogFar && rainCfg.fogFar < sunnyCfg.fogFar);
+  assert.ok(rainCfg.sunIntensityMult < sunnyCfg.sunIntensityMult);
+
+  const mistHud = buildWeatherHudState(toMist, 'day');
+  assert.equal(mistHud.condition, 'mist');
+  assert.equal(mistHud.label, 'Backwater Mist');
+  assert.equal(mistHud.transitionId, 2);
 });
 
 
