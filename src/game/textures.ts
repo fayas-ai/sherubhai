@@ -6,28 +6,51 @@ export function createRoadTexture(maxAnisotropy: number): THREE.CanvasTexture {
   canvas.height = 512;
   const ctx = canvas.getContext('2d')!;
 
-  // Warm dark tropical asphalt
-  ctx.fillStyle = '#333840';
+  // Realistic sun-baked tropical tarmac base with subtle transverse crown shading
+  const baseGrad = ctx.createLinearGradient(0, 0, 512, 0);
+  baseGrad.addColorStop(0, '#2a2f36');
+  baseGrad.addColorStop(0.18, '#343a43');
+  baseGrad.addColorStop(0.5, '#3a414b');
+  baseGrad.addColorStop(0.82, '#343a43');
+  baseGrad.addColorStop(1, '#2a2f36');
+  ctx.fillStyle = baseGrad;
   ctx.fillRect(0, 0, 512, 512);
 
-  // Subtle mineral grain
-  for (let i = 0; i < 4000; i++) {
-    const x = Math.random() * 512;
-    const y = Math.random() * 512;
-    const v = 42 + Math.floor(Math.random() * 28);
+  // Subtle realistic wheel-track polish strips along left & right lanes
+  ctx.fillStyle = 'rgba(20, 23, 28, 0.22)';
+  ctx.fillRect(92, 0, 44, 512);
+  ctx.fillRect(178, 0, 44, 512);
+  ctx.fillRect(290, 0, 44, 512);
+  ctx.fillRect(376, 0, 44, 512);
+
+  // Fine mineral asphalt aggregate grain (deterministic LCG for crisp tiling)
+  let seed = 1337;
+  const nextRand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  for (let i = 0; i < 6500; i++) {
+    const x = nextRand() * 512;
+    const y = nextRand() * 512;
+    const v = 38 + Math.floor(nextRand() * 34);
     ctx.fillStyle = `rgb(${v},${v + 2},${v + 5})`;
     ctx.fillRect(x, y, 2, 2);
   }
 
-  // Side white lines
-  ctx.fillStyle = '#e8e4d5';
-  ctx.fillRect(18, 0, 10, 512);
-  ctx.fillRect(484, 0, 10, 512);
+  // Concrete kerb shoulder edge strips
+  ctx.fillStyle = '#5c636b';
+  ctx.fillRect(0, 0, 14, 512);
+  ctx.fillRect(498, 0, 14, 512);
 
-  // Center yellow dashed divider
+  // Crisp weathered side white lines
+  ctx.fillStyle = '#ebe6d8';
+  ctx.fillRect(20, 0, 10, 512);
+  ctx.fillRect(482, 0, 10, 512);
+
+  // Realistic Kerala highway center yellow dashed divider with subtle wear
   ctx.fillStyle = '#f2be35';
   for (let y = 16; y < 512; y += 96) {
-    ctx.fillRect(250, y, 12, 52);
+    ctx.fillRect(250, y, 12, 54);
   }
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -44,24 +67,42 @@ export function createGrassTexture(maxAnisotropy: number): THREE.CanvasTexture {
   canvas.height = 512;
   const ctx = canvas.getContext('2d')!;
 
-  // Lush Kerala monsoon emerald grass
-  ctx.fillStyle = '#4e8a45';
+  // Rich sunlit Kerala tropical lawn base
+  ctx.fillStyle = '#477f3d';
   ctx.fillRect(0, 0, 512, 512);
 
-  for (let i = 0; i < 4500; i++) {
-    const x = Math.random() * 512;
-    const y = Math.random() * 512;
-    const g = 115 + Math.floor(Math.random() * 50);
-    const r = 62 + Math.floor(Math.random() * 35);
-    ctx.fillStyle = `rgb(${r},${g},56)`;
-    ctx.fillRect(x, y, 3, 5);
+  // Soft dappled chlorophyll & sunlit turf patches for realistic organic variation
+  let seed = 4242;
+  const nextRand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  for (let i = 0; i < 160; i++) {
+    const x = nextRand() * 512;
+    const y = nextRand() * 512;
+    const r = 14 + nextRand() * 32;
+    ctx.fillStyle =
+      i % 2 === 0 ? 'rgba(92, 152, 68, 0.22)' : 'rgba(42, 88, 38, 0.22)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
   }
 
-  // Subtle red laterite earth speckles
-  for (let i = 0; i < 300; i++) {
-    ctx.fillStyle = 'rgba(155, 86, 52, 0.25)';
+  // Fine blade strokes
+  for (let i = 0; i < 5500; i++) {
+    const x = nextRand() * 512;
+    const y = nextRand() * 512;
+    const g = 104 + Math.floor(nextRand() * 56);
+    const r = 54 + Math.floor(nextRand() * 34);
+    ctx.fillStyle = `rgb(${r},${g},48)`;
+    ctx.fillRect(x, y, 2, 5);
+  }
+
+  // Warm Kerala red laterite soil speckles
+  for (let i = 0; i < 240; i++) {
+    ctx.fillStyle = 'rgba(148, 82, 48, 0.22)';
     ctx.beginPath();
-    ctx.arc(Math.random() * 512, Math.random() * 512, 4 + Math.random() * 8, 0, Math.PI * 2);
+    ctx.arc(nextRand() * 512, nextRand() * 512, 3 + nextRand() * 7, 0, Math.PI * 2);
     ctx.fill();
   }
 

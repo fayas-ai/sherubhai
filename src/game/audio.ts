@@ -291,6 +291,76 @@ class SoundEngine {
       this.playTone(n, n, 0.18, 'triangle', 0.22, 0.26 + idx * 0.09);
     });
   }
+
+  public playTrainHorn() {
+    // Classic resonant Indian Railways dual-tone horn!
+    this.playTone(233, 231, 0.72, 'sawtooth', 0.16, 0);
+    this.playTone(294, 292, 0.72, 'sawtooth', 0.14, 0.02);
+    this.playTone(466, 462, 0.65, 'triangle', 0.08, 0.03);
+  }
+
+  public playStationAnnouncement(spokenText?: string) {
+    // Iconic 4-note Kerala railway station PA chime (Ding-Dong-Ding-Dong!)
+    this.playTone(659.25, 659.25, 0.24, 'sine', 0.18, 0);
+    this.playTone(523.25, 523.25, 0.24, 'sine', 0.18, 0.24);
+    this.playTone(587.33, 587.33, 0.24, 'sine', 0.18, 0.48);
+    this.playTone(392.0, 392.0, 0.42, 'sine', 0.18, 0.72);
+
+    if (
+      spokenText &&
+      !this.settings.muted &&
+      this.settings.sfxVolume > 0.05 &&
+      typeof window !== 'undefined' &&
+      'speechSynthesis' in window
+    ) {
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(spokenText);
+        utter.rate = 0.96;
+        utter.pitch = 1.04;
+        utter.volume = Math.min(0.65, this.settings.sfxVolume);
+        window.speechSynthesis.speak(utter);
+      } catch {
+        // Fallback silently to procedural chime if speech synthesis blocked
+      }
+    }
+  }
+
+  public playRailClack() {
+    // Gentle rhythmic train-on-track clack-clack!
+    this.playTone(145, 78, 0.055, 'triangle', 0.07, 0);
+    this.playTone(132, 72, 0.055, 'triangle', 0.06, 0.11);
+  }
+
+  public playSeaWaveSoft() {
+    // Soft rolling Arabian Sea wave hiss (filtered noise swell)
+    if (this.settings.muted || this.settings.sfxVolume <= 0.02) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    try {
+      const sr = ctx.sampleRate;
+      const len = Math.floor(sr * 1.4);
+      const buf = ctx.createBuffer(1, len, sr);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        const env = Math.sin((i / len) * Math.PI);
+        d[i] = (Math.random() * 2 - 1) * env * 0.4;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(520, ctx.currentTime);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(Math.max(0.005, this.settings.sfxVolume * 0.09), ctx.currentTime);
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      src.start();
+    } catch {
+      // Ignore if audio unavailable
+    }
+  }
 }
 
 export const soundEngine = new SoundEngine();

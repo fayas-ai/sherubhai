@@ -16,6 +16,7 @@ import {
   GameSettings,
   HudSnapshot,
   NearbyInteractable,
+  NpcTag,
   OwnedBusinessRecord,
   Vec2,
   VehicleDef,
@@ -51,23 +52,26 @@ import {
   AirportComplexRig,
   BuildingMeshHandle,
   CoconutPalmRig,
+  DroppedPurseRig,
   FallingCoconutRig,
   HospitalInteriorRig,
   NpcModelRig,
   PickpocketThiefRig,
   SheruModelRig,
+  SkyDomeRig,
   TownPedestrianRig,
   TrafficLightRig,
   applyPlayerAppearance,
   createAdBoard300x250Model,
   createAirportComplexModel,
   createAutoStandModel,
+  createBuildingLodProxy,
   createBuildingModel,
   createBuiltShopModel,
   createBusStopModel,
-  createCoconutPalm,
   createCoconutPalmRig,
   createCollectibleModel,
+  createDroppedPurseModel,
   createEmptyPlotModel,
   createFallingCoconutRig,
   createGoatModel,
@@ -75,6 +79,7 @@ import {
   createNpcModel,
   createParkingBayModel,
   createPickpocketThiefModel,
+  createRealisticSkyDome,
   createSheruBhaiModel,
   createStreetLamp,
   createTownPedestrianModel,
@@ -89,8 +94,23 @@ import {
   isPointOnAirportTarmac,
   mapMobileFlightCursor,
   stepAirplanePhysics,
-  stepGroundVehiclePhysics,
 } from './vehiclePhysics';
+import {
+  PhysicsDynamicActor,
+  RigidBodyProp,
+  WORLD_RAMPS,
+  createOpenWorldProps,
+  resolveVehiclePairCollision,
+  sampleWorldSurface,
+  stepCharacterPhysics,
+  stepRigidBodyProps,
+  stepVehicleChassisPhysics,
+} from './openWorldPhysics';
+import {
+  PhysicsPropVisualRig,
+  createRigidBodyPropVisual,
+  createStuntRampMesh,
+} from './physicsPropModels';
 import {
   TOWN_CROWD_ROUTES,
   TOWN_PALM_TREES,
@@ -114,15 +134,64 @@ import {
   stepWeatherCycle,
 } from './weatherLogic';
 import {
+  NpcPanicState,
   PurseChaseAction,
   PurseChaseActionResult,
   PurseChaseState,
   applyPurseChaseAction,
   buildPurseChaseHudState,
+  computePanickedChasePose,
   createInitialChaseState,
+  shouldPhysicalTackleCatch,
   startPurseChase,
+  stepPocketKidnapperNpcPanic,
   stepPurseChase,
 } from './chaseLogic';
+import {
+  AdaptivePerfState,
+  PerformanceBudget,
+  createAdaptivePerfState,
+  detectDevicePerformanceBudget,
+  stepAdaptivePerformance,
+} from './performanceLogic';
+import {
+  DynamicLodState,
+  LodTelemetrySnapshot,
+  LodTier,
+  classifyLodTierWithHysteresis,
+  classifyVisibleWithHysteresis,
+  createDynamicLodState,
+  updateDynamicLodScale,
+} from './lodSystem';
+import {
+  BEACH_BENCHES,
+  PLATFORM_CENTER_OFFSET,
+  RAILWAY_STATIONS,
+  RailwaySimulationState,
+  TRAIN_DEFS,
+  alightFromTrain,
+  boardStoppedTrain,
+  buildRailwayHudState,
+  canVehicleAccessBeach,
+  createInitialRailwayState,
+  fastForwardNextTrainAtPlatform,
+  findPlayerPlatformContext,
+  isPointOnBeachZone,
+  sampleTrackPoint,
+  stationLocalToWorld,
+  stepRailwaySimulation,
+} from './railwayLogic';
+import {
+  ArabianSeaRig,
+  KeralaTrainRig,
+  createArabianSeaAndBeach,
+  createDoubleTrackRailwayMesh,
+  createKeralaTrainRig,
+  createRailwayStationModel,
+  createStationPassengerRig,
+  createWesternGhatsMountains,
+  updateKeralaTrainRigTransform,
+} from './railwayModels';
 import { soundEngine } from './audio';
 
 // Module-level zero-GC scratch helpers
@@ -135,8 +204,13 @@ const _scale = new THREE.Vector3();
 const _skyDay = new THREE.Color(0x88ccf1);
 const _skySunset = new THREE.Color(0xf29f67);
 const _skyNight = new THREE.Color(0x111a2c);
+const _skyTopDay = new THREE.Color(0x1c6ed5);
+const _skyTopSunset = new THREE.Color(0x3a2d6b);
+const _skyTopNight = new THREE.Color(0x060b18);
+const _skyTopWork = new THREE.Color();
 const _skyWork = new THREE.Color();
 const _weatherSky = new THREE.Color();
+const _sunDirWork = new THREE.Vector3();
 
 interface ParticleSlot {
   active: boolean;
@@ -161,6 +235,10 @@ interface LiveNpc {
   walkPhase: number;
   rig: NpcModelRig;
   isBoss?: boolean;
+  tag?: NpcTag;
+  panicPhase?: number;
+  panicState?: NpcPanicState;
+  panicDustTimer?: number;
   name: string;
   role: string;
   homeBuildingId?: string;
@@ -173,11 +251,19 @@ interface LiveVehicle {
   x: number;
   y: number;
   z: number;
+  vy: number;
   yaw: number;
   pitch: number;
   roll: number;
+  pitchVel: number;
+  rollVel: number;
+  suspY: number;
+  suspVy: number;
+  grounded: boolean;
   speed: number;
+  lateralSpeed: number;
   maxSpeed: number;
+  mass: number;
   steerAngle: number;
   steerInput: number;
   isAircraft: boolean;
@@ -305,18 +391,70 @@ export class ThreeWorld {
   private maxAnisotropy: number;
 
   private sunLight: THREE.DirectionalLight;
+  private rimLight: THREE.DirectionalLight;
   private hemiLight: THREE.HemisphereLight;
+  private skyDome: SkyDomeRig;
   private nightLights: THREE.PointLight[] = [];
   private lampBulbMats: THREE.MeshStandardMaterial[] = [];
   private windowMats: THREE.MeshStandardMaterial[] = [];
   private airportRig: AirportComplexRig | null = null;
+  private perfBudget: PerformanceBudget;
+  private adaptivePerf: AdaptivePerfState;
+  private lodState: DynamicLodState;
+  private lodSweepAccum = 1;
+  private lodBuildingEntries: {
+    id: string;
+    x: number;
+    z: number;
+    high: THREE.Group;
+    low: THREE.Group;
+    tier: LodTier;
+    isHospital: boolean;
+  }[] = [];
+  private lodPalmEntries: {
+    x: number;
+    z: number;
+    rig: CoconutPalmRig;
+    tier: LodTier;
+    isPerimeter: boolean;
+  }[] = [];
+  private lodPropEntries: {
+    x: number;
+    z: number;
+    object: THREE.Object3D;
+    visible: boolean;
+    isLarge: boolean;
+  }[] = [];
+  private lodTelemetry: LodTelemetrySnapshot = {
+    quality: 'medium',
+    lodScale: 1,
+    cameraFar: 225,
+    buildingsLod0: 0,
+    buildingsLod1: 0,
+    buildingsCulled: 0,
+    palmsLod0: 0,
+    palmsLod1: 0,
+    palmsCulled: 0,
+    propsVisible: 0,
+    propsCulled: 0,
+    actorsVisible: 0,
+    actorsCulled: 0,
+  };
 
   private sheru: SheruModelRig;
   private playerX = PLAYER_SPAWN.x;
   private playerY = 0;
   private playerZ = PLAYER_SPAWN.z;
+  private playerVx = 0;
   private playerVy = 0;
+  private playerVz = 0;
   private playerYaw = PLAYER_SPAWN.yaw;
+  private physicsProps: RigidBodyProp[] = [];
+  private physicsPropVisuals: PhysicsPropVisualRig[] = [];
+  private physicsActorsScratch: PhysicsDynamicActor[] = [];
+  private driftSmokeCooldown = 0;
+  private propSoundCooldown = 0;
+  private vehicleBumpCooldown = 0;
   private walkPhase = 0;
   private footstepAccum = 0;
   private coyoteTimer = 0;
@@ -455,13 +593,22 @@ export class ThreeWorld {
   private chaseSeed = 1;
   private autoChaseTimer = 42;
   private thiefRig: PickpocketThiefRig | null = null;
+  private droppedPurseRig: DroppedPurseRig | null = null;
   private victimRig: TownPedestrianRig | null = null;
   private blasterBeam: THREE.Mesh | null = null;
   private blasterBeamTimer = 0;
-  private thiefWalkPhase = 0;
+  private thiefDustTimer = 0;
   private lastVisitedBuildingId = '';
   private frameId = 0;
   private disposed = false;
+
+  // Real Arabian Sea + Western Ghats Mountains + Beach Bench Sitting + Double-Track Kerala Railway!
+  private seaRig: ArabianSeaRig | null = null;
+  private sittingBenchId: string | null = null;
+  private railwayState: RailwaySimulationState = createInitialRailwayState();
+  private trainRigs: KeralaTrainRig[] = [];
+  private stationPassengerRigs: Map<string, TownPedestrianRig> = new Map();
+  private trainDriverCabView = true;
 
   constructor(
     container: HTMLElement,
@@ -489,11 +636,32 @@ export class ThreeWorld {
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.12;
-    this.applyGraphicsQuality(settings.graphicsQuality);
+    this.renderer.toneMappingExposure = 1.08;
 
     const initW = container.clientWidth || window.innerWidth;
     const initH = container.clientHeight || window.innerHeight;
+    const initIsMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0 || initW < 820;
+    this.perfBudget = detectDevicePerformanceBudget({
+      hardwareConcurrency: navigator.hardwareConcurrency,
+      deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+      viewportWidth: initW,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      isTouch: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
+      isSoftwareGl: this.isSoftwareGl,
+      requestedQuality: settings.graphicsQuality,
+    });
+    this.adaptivePerf = createAdaptivePerfState(
+      this.perfBudget.dprCap,
+      this.perfBudget.shadowsEnabled,
+      this.perfBudget.initialLodScale,
+    );
+    this.lodState = createDynamicLodState(
+      this.perfBudget.effectiveQuality,
+      initIsMobile,
+      this.adaptivePerf.lodScale,
+    );
+    this.applyGraphicsQuality(settings.graphicsQuality);
+
     this.renderer.setSize(initW, initH);
     this.renderer.domElement.style.position = 'relative';
     this.renderer.domElement.style.zIndex = '0';
@@ -520,16 +688,24 @@ export class ThreeWorld {
     container.appendChild(this.cssRenderer.domElement);
     this.init3DAdsterraPool();
 
-    this.maxAnisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    this.maxAnisotropy = Math.min(
+      this.perfBudget.maxAnisotropy,
+      this.renderer.capabilities.getMaxAnisotropy(),
+    );
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x88ccf1);
-    this.scene.fog = new THREE.Fog(0x88ccf1, 65, 175);
+    this.scene.fog = new THREE.Fog(0x88ccf1, 68, 180);
 
-    // Studio RoomEnvironment reflections on every device
+    // Studio RoomEnvironment reflections tuned to realistic outdoor IBL intensity
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.72;
     pmrem.dispose();
+
+    // Single-draw-call realistic gradient sky dome + glowing sun halo
+    this.skyDome = createRealisticSkyDome();
+    this.scene.add(this.skyDome.mesh);
 
     this.camera = new THREE.PerspectiveCamera(
       58,
@@ -538,17 +714,17 @@ export class ThreeWorld {
       260,
     );
 
-    // Warm/cool 3-point lighting rig
-    this.hemiLight = new THREE.HemisphereLight(0xaad9ff, 0x6b5d42, 0.85);
+    // Warm/cool 3-point outdoor lighting rig (Hemisphere + Key Sun with tight player-following shadows + Cool Rim Fill)
+    this.hemiLight = new THREE.HemisphereLight(0xb2ddff, 0x6b5d42, 0.86);
     this.scene.add(this.hemiLight);
 
-    this.sunLight = new THREE.DirectionalLight(0xfff1d6, 1.9);
+    this.sunLight = new THREE.DirectionalLight(0xfff1d6, 1.95);
     this.sunLight.position.set(42, 68, 36);
-    this.sunLight.castShadow = !this.isSoftwareGl;
-    this.sunLight.shadow.mapSize.set(1024, 1024);
+    this.sunLight.castShadow = this.perfBudget.shadowsEnabled;
+    this.sunLight.shadow.mapSize.set(this.perfBudget.shadowMapSize, this.perfBudget.shadowMapSize);
     this.sunLight.shadow.camera.near = 10;
-    this.sunLight.shadow.camera.far = 180;
-    const d = 62;
+    this.sunLight.shadow.camera.far = 165;
+    const d = 42;
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
@@ -556,12 +732,20 @@ export class ThreeWorld {
     this.sunLight.shadow.bias = -0.0005;
     this.sunLight.shadow.normalBias = 0.03;
     this.scene.add(this.sunLight);
+    this.scene.add(this.sunLight.target);
+
+    // Subtle cool sky rim/fill light opposite the sun (zero shadow cost, crisp 3D depth separation!)
+    this.rimLight = new THREE.DirectionalLight(0x9ad1ff, 0.52);
+    this.rimLight.position.set(-48, 32, -40);
+    this.scene.add(this.rimLight);
 
     // Lightweight single-draw-call 3D Monsoon Rain streaks (visible only when weather === 'rain')
     this.initRainSystem();
 
     // Build Kerala World Geometry
     this.buildEnvironment(initialProgress);
+    this.applyLodCameraAndShadows();
+    this.updateEnvironmentLod(0, true);
 
     // Build Sheru Bhai
     this.sheru = createSheruBhaiModel();
@@ -721,18 +905,40 @@ export class ThreeWorld {
     ground.receiveShadow = true;
     this.scene.add(ground);
 
-    // Distant coastal backwater ocean ring beyond the extended town & airport perimeter
-    const water = new THREE.Mesh(
-      new THREE.RingGeometry(WORLD_RADIUS + 34, 460, 48),
-      new THREE.MeshStandardMaterial({
-        color: 0x2176ae,
-        roughness: 0.22,
-        metalness: 0.35,
-      }),
-    );
-    water.rotation.x = -Math.PI / 2;
-    water.position.y = -0.12;
-    this.scene.add(water);
+    // Distant coastal backwater sea horizon replaced by real animated Arabian Sea (South) & Western Ghats Mountains (N/E/W)!
+    this.seaRig = createArabianSeaAndBeach();
+    this.scene.add(this.seaRig.group);
+
+    const mountains = createWesternGhatsMountains();
+    this.scene.add(mountains);
+
+    // Double-Track Kerala Railway Loop, 4 Named Stations with Foot-Overbridges, 4 Trains & 40 Live Station Passengers!
+    const railwayTrackMesh = createDoubleTrackRailwayMesh();
+    this.scene.add(railwayTrackMesh);
+
+    for (const st of RAILWAY_STATIONS) {
+      const stationMesh = createRailwayStationModel(st);
+      this.scene.add(stationMesh);
+    }
+
+    this.railwayState = createInitialRailwayState();
+    this.trainRigs = [];
+    for (const def of TRAIN_DEFS) {
+      const rig = createKeralaTrainRig(def);
+      const tr = this.railwayState.trains.find((t) => t.id === def.id);
+      if (tr) updateKeralaTrainRigTransform(rig, tr.distance);
+      this.scene.add(rig.root);
+      this.trainRigs.push(rig);
+    }
+
+    this.stationPassengerRigs.clear();
+    for (const p of this.railwayState.passengers) {
+      const pRig = createStationPassengerRig(p.shirtColor, p.lowerColor, p.skinColor, p.isSaree);
+      pRig.root.position.set(p.x, 0.55, p.z);
+      pRig.root.rotation.y = p.yaw;
+      this.scene.add(pRig.root);
+      this.stationPassengerRigs.set(p.id, pRig);
+    }
 
     // Kerala International Airport (COK) Complex: 196m Runway 09/27, Apron, Taxiways, ATC Tower, Hangar & Windsock
     this.airportRig = createAirportComplexModel(this.maxAnisotropy);
@@ -788,7 +994,7 @@ export class ThreeWorld {
     this.goldenStatueRig.group.position.set(0, 0, -4);
     this.scene.add(this.goldenStatueRig.group);
 
-    // Buildings
+    // Buildings (LOD0 detailed facade + LOD1 lightweight 2-mesh silhouette proxy)
     const plasterBump = createPlasterBumpTexture(this.maxAnisotropy);
     for (const b of BUILDINGS) {
       const handle = createBuildingModel(
@@ -803,6 +1009,18 @@ export class ThreeWorld {
       }
       this.windowMats.push(...handle.windowMats);
       this.scene.add(handle.group);
+
+      const lodProxy = createBuildingLodProxy(b);
+      this.scene.add(lodProxy);
+      this.lodBuildingEntries.push({
+        id: b.id,
+        x: b.x,
+        z: b.z,
+        high: handle.group,
+        low: lodProxy,
+        tier: 0,
+        isHospital: b.category === 'hospital',
+      });
     }
 
     // Empty Buildable Plots (or already-built shops from save)
@@ -840,6 +1058,7 @@ export class ThreeWorld {
       group.rotation.y = rot;
       this.scene.add(group);
       this.lampBulbMats.push(bulbMat);
+      this.lodPropEntries.push({ x: lx, z: lz, object: group, visible: true, isLarge: false });
 
       if (idx < 4) {
         const pl = new THREE.PointLight(0xffcb69, 0, 22, 1.6);
@@ -851,18 +1070,38 @@ export class ThreeWorld {
 
     // Freestanding 300×250 3D Town Ads Boards (press E to view live 300×250 Ad)
     for (const board of AD_BOARDS) {
-      this.scene.add(createAdBoard300x250Model(board, this.maxAnisotropy));
+      const boardObj = createAdBoard300x250Model(board, this.maxAnisotropy);
+      this.scene.add(boardObj);
+      this.lodPropEntries.push({
+        x: board.x,
+        z: board.z,
+        object: boardObj,
+        visible: true,
+        isLarge: true,
+      });
     }
 
     // Bus Stops, Auto Stands, Marked Parking Bays, Traffic Lights & Zebra Crossings
     for (const stop of BUS_STOPS) {
-      this.scene.add(createBusStopModel(stop, this.maxAnisotropy));
+      const stopObj = createBusStopModel(stop, this.maxAnisotropy);
+      this.scene.add(stopObj);
+      this.lodPropEntries.push({ x: stop.x, z: stop.z, object: stopObj, visible: true, isLarge: true });
     }
     for (const stand of AUTO_STANDS) {
-      this.scene.add(createAutoStandModel(stand, this.maxAnisotropy));
+      const standObj = createAutoStandModel(stand, this.maxAnisotropy);
+      this.scene.add(standObj);
+      this.lodPropEntries.push({
+        x: stand.x,
+        z: stand.z,
+        object: standObj,
+        visible: true,
+        isLarge: false,
+      });
     }
     for (const bay of PARKING_BAYS) {
-      this.scene.add(createParkingBayModel(bay));
+      const bayObj = createParkingBayModel(bay);
+      this.scene.add(bayObj);
+      this.lodPropEntries.push({ x: bay.x, z: bay.z, object: bayObj, visible: true, isLarge: false });
     }
     // 4 Zebra Crossings framing Main Junction
     this.scene.add(createZebraCrossing(0, 7.2, 0));
@@ -883,7 +1122,7 @@ export class ThreeWorld {
       { rig: tl4, axis: 'ew' },
     );
 
-    // Interactive Coconut Palms strictly on sidewalks & lawns (100% clear of all roads!)
+    // Interactive Coconut Palms strictly on sidewalks & lawns (100% clear of all roads, dual-tier LOD!)
     TOWN_PALM_TREES.forEach(([px, pz, ph], idx) => {
       const rig = createCoconutPalmRig(ph, 1.1);
       rig.root.position.set(px, 0, pz);
@@ -902,6 +1141,13 @@ export class ThreeWorld {
         detachedCocoIdx: -1,
         regrowTimer: 0,
         dropCooldown: 0,
+      });
+      this.lodPalmEntries.push({
+        x: px,
+        z: pz,
+        rig,
+        tier: 0,
+        isPerimeter: false,
       });
     });
 
@@ -923,26 +1169,26 @@ export class ThreeWorld {
       restTimer: 0,
     };
 
-    // Natural perimeter palm & hill ring around extended WORLD_RADIUS (leaving Airport approach corridor 100% clear!)
-    const hillMat = new THREE.MeshStandardMaterial({ color: 0x3b7a3e, roughness: 0.92 });
-    for (let i = 0; i < 56; i++) {
-      const angle = (i / 56) * Math.PI * 2;
-      const r = WORLD_RADIUS + 4 + (i % 3) * 4;
+    // Natural perimeter palm ring around outer town (leaving Airport runway, Beach & Railway Station vistas open!)
+    for (let i = 0; i < 42; i++) {
+      const angle = (i / 42) * Math.PI * 2;
+      const r = WORLD_RADIUS - 14 + (i % 3) * 4;
       const hx = Math.cos(angle) * r;
       const hz = Math.sin(angle) * r;
-      // Keep North Airport & East-West Runway 09/27 approach corridor completely open!
-      if (hz < -104 || Math.abs(hz - AIRPORT_RUNWAY.centerZ) < 42) continue;
-      const palm = createCoconutPalm(9 + (i % 4) * 1.4, 1.35);
-      palm.position.set(hx, 0, hz);
-      palm.rotation.y = angle + Math.PI;
-      this.scene.add(palm);
-
-      if (i % 2 === 0) {
-        const mound = new THREE.Mesh(new THREE.SphereGeometry(14, 10, 8), hillMat);
-        mound.scale.set(1.4, 0.55, 1.4);
-        mound.position.set(Math.cos(angle) * (WORLD_RADIUS + 22), -1.5, Math.sin(angle) * (WORLD_RADIUS + 22));
-        this.scene.add(mound);
-      }
+      // Keep North Airport, Runway 09/27 approach, South Beach & Railway Stations clear!
+      if (hz < -104 || hz > 118 || Math.abs(hz - AIRPORT_RUNWAY.centerZ) < 42) continue;
+      if (Math.abs(hx) > 144) continue;
+      const palmRig = createCoconutPalmRig(9 + (i % 4) * 1.4, 1.35);
+      palmRig.root.position.set(hx, 0, hz);
+      palmRig.root.rotation.y = angle + Math.PI;
+      this.scene.add(palmRig.root);
+      this.lodPalmEntries.push({
+        x: hx,
+        z: hz,
+        rig: palmRig,
+        tier: 0,
+        isPerimeter: true,
+      });
     }
 
     // Town Park Benches & Fictional Billboards
@@ -970,6 +1216,7 @@ export class ThreeWorld {
         bench.add(l);
       }
       this.scene.add(bench);
+      this.lodPropEntries.push({ x: bx, z: bz, object: bench, visible: true, isLarge: false });
     }
 
     // Fictional Comedy Billboard cleanly off northRoadEW overlooking Main Junction lawn
@@ -1016,6 +1263,10 @@ export class ThreeWorld {
         walkPhase: Math.random() * 6,
         rig,
         isBoss: def.isBoss,
+        tag: def.tag,
+        panicPhase: Math.random() * 6,
+        panicState: 'calm',
+        panicDustTimer: 0,
         name: def.name,
         role: def.role,
         homeBuildingId: def.homeBuildingId,
@@ -1070,11 +1321,19 @@ export class ThreeWorld {
         x: spawnDef.x,
         y: 0,
         z: spawnDef.z,
+        vy: 0,
         yaw: spawnDef.rotationY,
         pitch: 0,
         roll: 0,
+        pitchVel: 0,
+        rollVel: 0,
+        suspY: 0,
+        suspVy: 0,
+        grounded: true,
         speed: 0,
+        lateralSpeed: 0,
         maxSpeed: v.maxSpeed,
+        mass: v.type === 'bus' || v.type === 'fire_engine' ? 24 : v.type === 'auto' ? 7 : 12,
         steerAngle: 0,
         steerInput: 0,
         isAircraft: Boolean(v.isAircraft || isAircraftType(v.type)),
@@ -1087,6 +1346,23 @@ export class ThreeWorld {
         mesh: rig.root,
       });
     }
+
+    // Spawn 4 Open-World Kerala Stunt Ramps (matched 1-to-1 with sampleWorldSurface heightfield!)
+    for (const ramp of WORLD_RAMPS) {
+      const rampMesh = createStuntRampMesh(ramp);
+      this.scene.add(rampMesh);
+    }
+
+    // Spawn 32 Interactive 3D Rigid-Body Street Props (Footballs, Cones, Crates, Barrels!)
+    this.physicsProps = createOpenWorldProps();
+    this.physicsPropVisuals = this.physicsProps.map((prop) => {
+      const visual = createRigidBodyPropVisual(prop.kind);
+      visual.mesh.position.set(prop.x, prop.y, prop.z);
+      visual.shadow.position.set(prop.x, sampleWorldSurface(prop.x, prop.z).groundY + 0.025, prop.z);
+      this.scene.add(visual.mesh);
+      this.scene.add(visual.shadow);
+      return visual;
+    });
 
     // Spawn Living Kerala Road Traffic (14 lightweight compact vehicles, capped by Graphics Quality!)
     this.buildRoadTraffic();
@@ -1101,10 +1377,14 @@ export class ThreeWorld {
       this.scene.add(mesh);
     }
 
-    // Build pooled 3D Pickpocket Chase Rigs (Thief + Saree Girl Victim + Golden Stun Blaster Beam)
+    // Build pooled 3D Pickpocket Chase Rigs (Thief + Standalone Dropped Purse + Saree Girl Victim + Stun Blaster Beam)
     this.thiefRig = createPickpocketThiefModel();
     this.thiefRig.root.visible = false;
     this.scene.add(this.thiefRig.root);
+
+    this.droppedPurseRig = createDroppedPurseModel();
+    this.droppedPurseRig.root.visible = false;
+    this.scene.add(this.droppedPurseRig.root);
 
     this.victimRig = createVictimGirlModel();
     this.victimRig.root.visible = false;
@@ -1353,9 +1633,31 @@ export class ThreeWorld {
   }
 
   private applyGraphicsQuality(q: GameSettings['graphicsQuality']) {
-    // Keep ALL 11 road routes populated across every quality preset!
-    // Low keeps 2 vehicles per road (~22), Medium keeps 3 per road (~31), High keeps all 34.
-    const perRoadCap = q === 'low' ? 2 : q === 'medium' ? 3 : 10;
+    const viewW = this.container?.clientWidth || window.innerWidth;
+    const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    const isMobile = isTouch || viewW < 820;
+    this.perfBudget = detectDevicePerformanceBudget({
+      hardwareConcurrency: navigator.hardwareConcurrency,
+      deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+      viewportWidth: viewW,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      isTouch,
+      isSoftwareGl: this.isSoftwareGl,
+      requestedQuality: q,
+    });
+    this.adaptivePerf = createAdaptivePerfState(
+      this.perfBudget.dprCap,
+      this.perfBudget.shadowsEnabled,
+      this.perfBudget.initialLodScale,
+    );
+    this.lodState = createDynamicLodState(
+      this.perfBudget.effectiveQuality,
+      isMobile,
+      this.adaptivePerf.lodScale,
+    );
+
+    // Keep ALL 11 road routes populated across every device & quality tier!
+    const perRoadCap = this.perfBudget.trafficPerRoadCap;
     const roadCounts = new Map<string, number>();
     this.aiTraffic.forEach((v) => {
       const count = roadCounts.get(v.roadId) ?? 0;
@@ -1365,33 +1667,210 @@ export class ThreeWorld {
       v.rig.root.visible = active;
     });
 
-    if (this.isSoftwareGl) {
-      this.renderer.setPixelRatio(1);
-      this.renderer.shadowMap.enabled = false;
-      return;
+    this.renderer.setPixelRatio(this.perfBudget.dprCap);
+    this.renderer.shadowMap.enabled = this.perfBudget.shadowsEnabled;
+    if (this.perfBudget.shadowsEnabled) {
+      this.renderer.shadowMap.type =
+        this.perfBudget.effectiveQuality === 'high' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
     }
-    if (q === 'low') {
-      this.renderer.setPixelRatio(1);
-      this.renderer.shadowMap.enabled = false;
-    } else if (q === 'medium') {
-      // Lossless high-FPS cap: 1.25x DPR & 512px shadow map eliminates HiDPI lag while staying razor-sharp!
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
-      this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = THREE.PCFShadowMap;
-      if (this.sunLight) {
-        this.sunLight.shadow.mapSize.set(512, 512);
-        this.sunLight.shadow.map?.dispose();
-        this.sunLight.shadow.map = null;
+    if (this.sunLight) {
+      this.sunLight.castShadow = this.perfBudget.shadowsEnabled;
+      this.sunLight.shadow.mapSize.set(
+        this.perfBudget.shadowMapSize,
+        this.perfBudget.shadowMapSize,
+      );
+      this.sunLight.shadow.map?.dispose();
+      this.sunLight.shadow.map = null;
+    }
+    this.applyLodCameraAndShadows();
+    this.updateEnvironmentLod(0, true);
+  }
+
+  public getLodStats(): LodTelemetrySnapshot {
+    return { ...this.lodTelemetry };
+  }
+
+  private applyLodCameraAndShadows() {
+    if (!this.lodState) return;
+    const d = this.lodState.distances;
+    const activeVeh = this.activeVehicleId
+      ? this.liveVehicles.find((v) => v.id === this.activeVehicleId)
+      : null;
+    const isScenicVista =
+      Boolean(activeVeh?.isAircraft) ||
+      this.railwayState.riderMode !== 'none' ||
+      this.sittingBenchId !== null ||
+      isPointOnBeachZone(this.playerX, this.playerZ);
+    // Guarantee mountains, Arabian Sea & railway vistas remain crisp without ever clipping skyDome!
+    const desiredFar = Math.max(d.cameraFar, isScenicVista ? 540 : 420);
+    if (this.camera && Math.abs(this.camera.far - desiredFar) > 2) {
+      this.camera.far = desiredFar;
+      this.camera.updateProjectionMatrix();
+    }
+    if (this.sunLight) {
+      const half = d.shadowFrustumHalf;
+      if (this.sunLight.shadow.camera.right !== half) {
+        this.sunLight.shadow.camera.left = -half;
+        this.sunLight.shadow.camera.right = half;
+        this.sunLight.shadow.camera.top = half;
+        this.sunLight.shadow.camera.bottom = -half;
+        this.sunLight.shadow.camera.updateProjectionMatrix();
       }
-    } else {
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-      this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-      if (this.sunLight) {
-        this.sunLight.shadow.mapSize.set(1024, 1024);
-        this.sunLight.shadow.map?.dispose();
-        this.sunLight.shadow.map = null;
+    }
+  }
+
+  /**
+   * Zero-GC Dynamic Detail Scaling (LOD) sweep for the 3D environment:
+   * Evaluates squared distance from the active camera/player to buildings, coconut palms,
+   * street props, rigid-body props, and vehicles with hysteresis to slash draw calls & vertex load
+   * on low-end mobile devices without visual popping.
+   */
+  private updateEnvironmentLod(dt: number, force = false) {
+    if (!this.lodState || !this.scene) return;
+    this.lodSweepAccum += dt;
+    if (!force && this.lodSweepAccum < this.lodState.distances.sweepIntervalSec) return;
+    this.lodSweepAccum = 0;
+
+    const d = this.lodState.distances;
+    const refX = this.camera ? this.camera.position.x : this.playerX;
+    const refZ = this.camera ? this.camera.position.z : this.playerZ;
+    const hyst = d.hysteresis;
+
+    let buildingsLod0 = 0;
+    let buildingsLod1 = 0;
+    let buildingsCulled = 0;
+    for (let i = 0; i < this.lodBuildingEntries.length; i++) {
+      const b = this.lodBuildingEntries[i];
+      const dx = b.x - refX;
+      const dz = b.z - refZ;
+      const distSq = dx * dx + dz * dz;
+      const nextTier: LodTier =
+        b.isHospital && this.inHospital
+          ? 0
+          : classifyLodTierWithHysteresis(
+              distSq,
+              b.tier,
+              d.buildingMidDist,
+              d.buildingCullDist,
+              hyst,
+            );
+      if (nextTier !== b.tier || force) {
+        b.tier = nextTier;
+        b.high.visible = nextTier === 0;
+        b.low.visible = nextTier === 1;
       }
+      if (b.tier === 0) buildingsLod0++;
+      else if (b.tier === 1) buildingsLod1++;
+      else buildingsCulled++;
+    }
+
+    let palmsLod0 = 0;
+    let palmsLod1 = 0;
+    let palmsCulled = 0;
+    for (let i = 0; i < this.lodPalmEntries.length; i++) {
+      const p = this.lodPalmEntries[i];
+      const dx = p.x - refX;
+      const dz = p.z - refZ;
+      const distSq = dx * dx + dz * dz;
+      const midDist = p.isPerimeter ? Math.max(18, d.palmMidDist * 0.72) : d.palmMidDist;
+      const nextTier = classifyLodTierWithHysteresis(
+        distSq,
+        p.tier,
+        midDist,
+        d.palmCullDist,
+        hyst,
+      );
+      if (nextTier !== p.tier || force) {
+        p.tier = nextTier;
+        p.rig.root.visible = nextTier < 2;
+        p.rig.highDetailGroup.visible = nextTier === 0;
+        p.rig.lowDetailGroup.visible = nextTier === 1;
+      }
+      if (p.tier === 0) palmsLod0++;
+      else if (p.tier === 1) palmsLod1++;
+      else palmsCulled++;
+    }
+
+    let propsVisible = 0;
+    let propsCulled = 0;
+    for (let i = 0; i < this.lodPropEntries.length; i++) {
+      const prop = this.lodPropEntries[i];
+      const dx = prop.x - refX;
+      const dz = prop.z - refZ;
+      const distSq = dx * dx + dz * dz;
+      const cullDist = prop.isLarge ? d.palmCullDist : d.propCullDist;
+      const nextVis = classifyVisibleWithHysteresis(distSq, prop.visible, cullDist, hyst);
+      if (nextVis !== prop.visible || force) {
+        prop.visible = nextVis;
+        prop.object.visible = nextVis;
+      }
+      if (prop.visible) propsVisible++;
+      else propsCulled++;
+    }
+
+    // Distance-scale rigid-body physics prop meshes & contact shadows
+    const propCullSq = d.propCullDist * d.propCullDist;
+    const propShadowSq = d.propShadowDist * d.propShadowDist;
+    for (let i = 0; i < this.physicsProps.length; i++) {
+      const p = this.physicsProps[i];
+      const vis = this.physicsPropVisuals[i];
+      if (!vis) continue;
+      const dx = p.x - refX;
+      const dz = p.z - refZ;
+      const distSq = dx * dx + dz * dz;
+      const showMesh = !p.sleeping || distSq <= propCullSq;
+      vis.mesh.visible = showMesh;
+      vis.shadow.visible = showMesh && distSq <= propShadowSq;
+      if (showMesh) propsVisible++;
+      else propsCulled++;
+    }
+
+    // Distance-cull far parked/AI vehicles while always keeping active, emergency, and aircraft visible
+    const vehCullSq = d.vehicleCullDist * d.vehicleCullDist;
+    let actorsVisible = 0;
+    let actorsCulled = 0;
+    for (let i = 0; i < this.liveVehicles.length; i++) {
+      const v = this.liveVehicles[i];
+      const keepVisible =
+        v.id === this.activeVehicleId ||
+        v.isAircraft ||
+        (this.emergencyDispatch.active && v.id === this.emergencyDispatch.ambulanceId);
+      const dx = v.x - refX;
+      const dz = v.z - refZ;
+      const show = keepVisible || dx * dx + dz * dz <= vehCullSq;
+      v.mesh.visible = show;
+      if (show) actorsVisible++;
+      else actorsCulled++;
+    }
+    for (let i = 0; i < this.aiTraffic.length; i++) {
+      const ai = this.aiTraffic[i];
+      if (!ai.active) continue;
+      const dx = ai.x - refX;
+      const dz = ai.z - refZ;
+      const show = dx * dx + dz * dz <= vehCullSq;
+      ai.rig.root.visible = show;
+      if (show) actorsVisible++;
+      else actorsCulled++;
+    }
+
+    this.lodTelemetry = {
+      quality: this.lodState.quality,
+      lodScale: this.lodState.lodScale,
+      cameraFar: d.cameraFar,
+      buildingsLod0,
+      buildingsLod1,
+      buildingsCulled,
+      palmsLod0,
+      palmsLod1,
+      palmsCulled,
+      propsVisible,
+      propsCulled,
+      actorsVisible,
+      actorsCulled,
+    };
+    if (typeof window !== 'undefined') {
+      (window as Window & { __keralaLodStats?: LodTelemetrySnapshot }).__keralaLodStats =
+        this.lodTelemetry;
     }
   }
 
@@ -1426,11 +1905,19 @@ export class ThreeWorld {
         x: safe.x,
         y: 0,
         z: safe.z,
+        vy: 0,
         yaw: spawnYaw,
         pitch: 0,
         roll: 0,
+        pitchVel: 0,
+        rollVel: 0,
+        suspY: 0,
+        suspVy: 0,
+        grounded: true,
         speed: 0,
+        lateralSpeed: 0,
         maxSpeed: def.maxSpeed,
+        mass: def.type === 'bus' || def.type === 'fire_engine' ? 24 : def.type === 'auto' ? 7 : 12,
         steerAngle: 0,
         steerInput: 0,
         isAircraft: aircraft,
@@ -1447,17 +1934,25 @@ export class ThreeWorld {
       existing.x = safe.x;
       existing.y = 0;
       existing.z = safe.z;
+      existing.vy = 0;
       existing.yaw = spawnYaw;
       existing.pitch = 0;
       existing.roll = 0;
+      existing.pitchVel = 0;
+      existing.rollVel = 0;
+      existing.suspY = 0;
+      existing.suspVy = 0;
+      existing.grounded = true;
       existing.speed = 0;
+      existing.lateralSpeed = 0;
       existing.steerInput = 0;
       existing.flightState = 'ground';
       existing.autoLanding = false;
       existing.peakAltitude = 0;
       existing.mesh.visible = true;
       existing.mesh.position.set(existing.x, 0, existing.z);
-      existing.mesh.rotation.y = existing.yaw;
+      existing.mesh.rotation.order = 'YXZ';
+      existing.mesh.rotation.set(0, existing.yaw, 0);
       if (existing.rig.bodyPivot) existing.rig.bodyPivot.rotation.set(0, 0, 0);
     }
 
@@ -1490,6 +1985,10 @@ export class ThreeWorld {
   public teleportToAirport() {
     this.activeVehicleId = null;
     this.autopilotDest = null;
+    this.sittingBenchId = null;
+    if (this.railwayState.riderMode !== 'none') {
+      this.railwayState = { ...this.railwayState, riderMode: 'none', ridingTrainId: null };
+    }
     this.inHospital = false;
     this.sheru.root.visible = true;
     this.playerX = -2;
@@ -1503,6 +2002,168 @@ export class ThreeWorld {
     this.snapCameraImmediate();
     this.spawnParticleBurst(this.playerX, 1.2, this.playerZ, 18, 0x38bdf8);
     this.hudThrottle = 1;
+  }
+
+  /**
+   * Quick-travel helper to Malabar Golden Beach or any of the 4 Kerala Railway Stations!
+   */
+  public teleportToScenicSpot(spotId: string) {
+    this.activeVehicleId = null;
+    this.autopilotDest = null;
+    this.sittingBenchId = null;
+    if (this.railwayState.riderMode !== 'none') {
+      this.railwayState = { ...this.railwayState, riderMode: 'none', ridingTrainId: null };
+    }
+    this.inHospital = false;
+    this.sheru.root.visible = true;
+
+    if (spotId === 'beach') {
+      this.playerX = -4;
+      this.playerY = 0.14;
+      this.playerZ = 172;
+      this.playerYaw = 0; // Facing South straight out at the shimmering Arabian Sea!
+      this.camYaw = 0;
+      this.camPitch = 0.2;
+    } else {
+      const st = RAILWAY_STATIONS.find((s) => s.id === spotId) ?? RAILWAY_STATIONS[0];
+      const pfPos = stationLocalToWorld(st, -4, -PLATFORM_CENTER_OFFSET);
+      this.playerX = pfPos.x;
+      this.playerY = 0.55;
+      this.playerZ = pfPos.z;
+      // Face outward toward Platform 1 & Track A!
+      const faceYaw = Math.atan2(st.outwardX, st.outwardZ);
+      this.playerYaw = faceYaw;
+      this.camYaw = faceYaw;
+      this.camPitch = 0.2;
+    }
+
+    this.sheru.root.position.set(this.playerX, this.playerY, this.playerZ);
+    this.sheru.root.rotation.y = this.playerYaw;
+    this.applyLodCameraAndShadows();
+    this.snapCameraImmediate();
+    this.spawnParticleBurst(this.playerX, this.playerY + 1.2, this.playerZ, 16, 0x38bdf8);
+    this.hudThrottle = 1;
+  }
+
+  public boardTrainAtStation(mode: 'driver' | 'passenger'): { success: boolean; message: string } {
+    if (this.activeVehicleId || this.railwayState.riderMode !== 'none') {
+      return { success: false, message: 'Exit your current vehicle first!' };
+    }
+    const ctx = findPlayerPlatformContext(this.railwayState, this.playerX, this.playerZ);
+    if (!ctx || !ctx.stoppedTrain) {
+      return {
+        success: false,
+        message: 'Wait until a train arrives and stops at this platform!',
+      };
+    }
+    const res = boardStoppedTrain(this.railwayState, ctx.stoppedTrain.id, mode);
+    this.railwayState = res.state;
+    if (res.success) {
+      this.sittingBenchId = null;
+      this.sheru.root.visible = false;
+      this.trainDriverCabView = true;
+      soundEngine.playBusHorn();
+      this.applyLodCameraAndShadows();
+      this.hudThrottle = 1;
+    }
+    return { success: res.success, message: res.message };
+  }
+
+  public alightCurrentTrain(): { success: boolean; message: string } {
+    const res = alightFromTrain(this.railwayState);
+    this.railwayState = res.state;
+    if (res.success) {
+      this.playerX = res.exitX;
+      this.playerY = 0.55;
+      this.playerZ = res.exitZ;
+      this.sheru.root.position.set(this.playerX, this.playerY, this.playerZ);
+      this.sheru.root.visible = true;
+      soundEngine.playInteract();
+      this.snapCameraImmediate();
+      this.hudThrottle = 1;
+    } else {
+      soundEngine.playBrakeScreech();
+    }
+    return { success: res.success, message: res.message };
+  }
+
+  public waitForNextTrainAtStation(): boolean {
+    const ctx = findPlayerPlatformContext(this.railwayState, this.playerX, this.playerZ);
+    if (!ctx || ctx.stoppedTrain) return false;
+    this.railwayState = fastForwardNextTrainAtPlatform(
+      this.railwayState,
+      ctx.station.id,
+      ctx.platform,
+    );
+    soundEngine.playBusHorn();
+    this.hudThrottle = 1;
+    return true;
+  }
+
+  public cycleTrainCameraView() {
+    if (this.railwayState.riderMode === 'passenger') {
+      const order: ('right_window' | 'left_window' | 'outside')[] = [
+        'right_window',
+        'left_window',
+        'outside',
+      ];
+      const next = order[(order.indexOf(this.railwayState.seatView) + 1) % order.length];
+      this.railwayState = { ...this.railwayState, seatView: next };
+      this.hudThrottle = 1;
+    } else if (this.railwayState.riderMode === 'driver') {
+      this.trainDriverCabView = !this.trainDriverCabView;
+      this.railwayState = {
+        ...this.railwayState,
+        seatView: this.trainDriverCabView ? 'right_window' : 'outside',
+      };
+      this.hudThrottle = 1;
+    }
+  }
+
+  public soundTrainHorn() {
+    soundEngine.playBusHorn();
+  }
+
+  public setTrainTouchThrottle(throttle: number) {
+    this.railwayState = { ...this.railwayState, driverThrottle: throttle };
+  }
+
+  public toggleSitOnBench(benchId?: string): boolean {
+    if (this.sittingBenchId) {
+      // Stand up smoothly right in front of the beach bench!
+      const b = BEACH_BENCHES.find((item) => item.id === this.sittingBenchId);
+      this.sittingBenchId = null;
+      if (b) {
+        this.playerX = b.x;
+        this.playerZ = b.z - 1.35;
+        this.playerY = 0.14;
+      }
+      this.sheru.leftLeg.rotation.x = 0;
+      this.sheru.rightLeg.rotation.x = 0;
+      this.sheru.bodyGroup.position.y = 0;
+      soundEngine.playInteract();
+      this.hudThrottle = 1;
+      return false;
+    }
+    if (this.activeVehicleId || this.railwayState.riderMode !== 'none') return false;
+    const target = benchId
+      ? BEACH_BENCHES.find((b) => b.id === benchId)
+      : BEACH_BENCHES.find((b) => Math.hypot(b.x - this.playerX, b.z - this.playerZ) <= 3.6);
+    if (!target) return false;
+    this.sittingBenchId = target.id;
+    this.playerX = target.x;
+    this.playerZ = target.z + 0.05;
+    this.playerY = 0.56;
+    this.playerYaw = target.facingYaw; // Face +Z directly toward the Arabian Sea waves!
+    this.camYaw = target.facingYaw;
+    this.camPitch = 0.14;
+    this.playerVx = 0;
+    this.playerVz = 0;
+    this.playerVy = 0;
+    this.applyLodCameraAndShadows();
+    soundEngine.playInteract();
+    this.hudThrottle = 1;
+    return true;
   }
 
   private snapCameraImmediate() {
@@ -1617,11 +2278,19 @@ export class ThreeWorld {
         x: 54,
         y: 0,
         z: -36,
+        vy: 0,
         yaw: -Math.PI / 2,
         pitch: 0,
         roll: 0,
+        pitchVel: 0,
+        rollVel: 0,
+        suspY: 0,
+        suspVy: 0,
+        grounded: true,
         speed: 0,
+        lateralSpeed: 0,
         maxSpeed: 45,
+        mass: 15,
         steerAngle: 0,
         steerInput: 0,
         isAircraft: false,
@@ -1829,16 +2498,25 @@ export class ThreeWorld {
       thiefX: safeThief.x,
       thiefZ: safeThief.z,
     };
-    this.thiefWalkPhase = 0;
+    this.thiefDustTimer = 0;
 
     if (this.thiefRig) {
       this.thiefRig.root.position.set(this.purseChase.thiefX, 0, this.purseChase.thiefZ);
       this.thiefRig.root.rotation.y = this.purseChase.thiefYaw;
-      this.thiefRig.bodyGroup.rotation.z = 0;
+      this.thiefRig.bodyGroup.rotation.set(0.34, 0, 0);
       this.thiefRig.bodyGroup.position.y = 0;
+      this.thiefRig.headGroup.rotation.set(0, 0, 0);
+      this.thiefRig.stolenPurse.visible = true;
+      this.thiefRig.panicAlert.visible = true;
       this.thiefRig.dizzyStars.visible = false;
       this.thiefRig.beaconArrow.visible = true;
       this.thiefRig.root.visible = true;
+    }
+    if (this.droppedPurseRig) {
+      this.droppedPurseRig.root.visible = false;
+      this.droppedPurseRig.haloRing.visible = false;
+      this.droppedPurseRig.impactRing.visible = false;
+      this.droppedPurseRig.purseMesh.scale.set(1, 1, 1);
     }
     if (this.victimRig) {
       this.victimRig.root.position.set(this.purseChase.victimX, 0, this.purseChase.victimZ);
@@ -1871,6 +2549,24 @@ export class ThreeWorld {
         this.sheru.root.rotation.y = this.playerYaw;
       }
 
+      if (res.caughtNow) {
+        // Visually launch the stolen purse out of the pocket kidnapper's hand onto the road!
+        if (this.thiefRig) {
+          this.thiefRig.stolenPurse.visible = false;
+          this.thiefRig.panicAlert.visible = false;
+          this.thiefRig.dizzyStars.visible = true;
+        }
+        if (this.droppedPurseRig && this.purseChase.droppedItem.dropped) {
+          const item = this.purseChase.droppedItem;
+          this.droppedPurseRig.root.position.set(item.x, 0, item.z);
+          this.droppedPurseRig.purseMesh.position.set(0, item.y, 0);
+          this.droppedPurseRig.purseMesh.rotation.set(item.rotX, 0, item.rotZ);
+          this.droppedPurseRig.haloRing.visible = false;
+          this.droppedPurseRig.root.visible = true;
+          this.spawnParticleBurst(item.x, item.y, item.z, 14, 0xf472b6);
+        }
+      }
+
       if (action === 'gun') {
         soundEngine.playCartoonBlaster();
         if (this.blasterBeam) {
@@ -1890,9 +2586,6 @@ export class ThreeWorld {
         }
         this.spawnParticleBurst(prevThiefX, 1.4, prevThiefZ, 18, 0xfde047);
         this.camShakeTrauma = Math.min(1, this.camShakeTrauma + 0.3);
-        if (res.caughtNow && this.thiefRig) {
-          this.thiefRig.dizzyStars.visible = true;
-        }
       } else if (action === 'slap') {
         soundEngine.playSlapHand();
         this.triggerCelebration('flex');
@@ -1909,6 +2602,14 @@ export class ThreeWorld {
         if (this.thiefRig) {
           this.thiefRig.root.visible = false;
           this.thiefRig.dizzyStars.visible = false;
+          this.thiefRig.panicAlert.visible = false;
+          this.thiefRig.stolenPurse.visible = true;
+        }
+        if (this.droppedPurseRig) {
+          this.droppedPurseRig.root.visible = false;
+          this.droppedPurseRig.haloRing.visible = false;
+          this.droppedPurseRig.impactRing.visible = false;
+          this.droppedPurseRig.purseMesh.scale.set(1, 1, 1);
         }
         if (this.victimRig) {
           this.victimRig.root.visible = false;
@@ -1988,11 +2689,19 @@ export class ThreeWorld {
         x: targetX - 18,
         y: 0,
         z: targetZ,
+        vy: 0,
         yaw: 0,
         pitch: 0,
         roll: 0,
+        pitchVel: 0,
+        rollVel: 0,
+        suspY: 0,
+        suspVy: 0,
+        grounded: true,
         speed: 0,
+        lateralSpeed: 0,
         maxSpeed: fireDef.maxSpeed,
+        mass: 24,
         steerAngle: 0,
         steerInput: 0,
         isAircraft: false,
@@ -2121,6 +2830,19 @@ export class ThreeWorld {
 
   public triggerInteract() {
     if (this.mode !== 'playing' || this.modalOpen) return;
+
+    // 1. If riding or driving a Kerala train, E attempts to get off ONLY when stopped at a station!
+    if (this.railwayState.riderMode !== 'none') {
+      this.alightCurrentTrain();
+      return;
+    }
+
+    // 2. If sitting on a Malabar Beach bench, E stands Sheru back up!
+    if (this.sittingBenchId) {
+      this.toggleSitOnBench();
+      return;
+    }
+
     if (this.activeVehicleId) {
       // Exit vehicle safely beside it (if airborne, land smoothly on Airport Apron so Sheru stays safe!)
       const veh = this.liveVehicles.find((v) => v.id === this.activeVehicleId);
@@ -2149,7 +2871,7 @@ export class ThreeWorld {
         const safe = resolveCircleWorldCollision(exitX, exitZ, 0.85, this.colliders);
         this.playerX = safe.x;
         this.playerZ = safe.z;
-        this.playerY = 0;
+        this.playerY = sampleWorldSurface(safe.x, safe.z).groundY;
       }
       this.sheru.root.visible = true;
       soundEngine.playInteract();
@@ -2160,11 +2882,17 @@ export class ThreeWorld {
     const nearby = this.findNearestInteractable();
     if (!nearby) return;
 
+    if (nearby.kind === 'beach_bench') {
+      this.toggleSitOnBench(nearby.id);
+      return;
+    }
+
     if (nearby.kind === 'vehicle') {
       this.activeVehicleId = nearby.id;
       this.sheru.root.visible = false;
       soundEngine.playHorn();
       this.callbacks.onVehicleEnter(nearby.id);
+      this.applyLodCameraAndShadows();
       this.hudThrottle = 1;
       return;
     }
@@ -2211,6 +2939,25 @@ export class ThreeWorld {
         best = cand;
       }
     };
+
+    // Malabar Beach Sit-able Coastal Benches (only on foot, never while in aeroplane/vehicle!)
+    if (!this.activeVehicleId && !this.sittingBenchId && this.railwayState.riderMode === 'none') {
+      for (const b of BEACH_BENCHES) {
+        const dist = Math.hypot(b.x - this.playerX, b.z - this.playerZ);
+        consider(
+          {
+            kind: 'beach_bench',
+            id: b.id,
+            label: 'Sit on Beach Bench',
+            sublabel: `${b.label} · Arabian Sea View`,
+            distance: dist,
+            x: b.x,
+            z: b.z,
+          },
+          3.4,
+        );
+      }
+    }
 
     // Collectibles
     for (const c of WORLD_COLLECTIBLES) {
@@ -2361,6 +3108,10 @@ export class ThreeWorld {
     if (this.disposed) return;
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;
+    const nextIsMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0 || w < 820;
+    if (this.lodState && nextIsMobile !== this.lodState.isMobile) {
+      this.applyGraphicsQuality(this.settings.graphicsQuality);
+    }
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
@@ -2391,6 +3142,11 @@ export class ThreeWorld {
       } else if (code === 'KeyE') {
         e.preventDefault();
         this.triggerInteract();
+      } else if (code === 'KeyC' && this.railwayState.riderMode !== 'none') {
+        e.preventDefault();
+        this.cycleTrainCameraView();
+      } else if (code === 'KeyH' && this.railwayState.riderMode !== 'none') {
+        this.soundTrainHorn();
       } else if (code === 'KeyH' && this.activeVehicleId) {
         const veh = this.liveVehicles.find((v) => v.id === this.activeVehicleId);
         if (
@@ -2456,43 +3212,106 @@ export class ThreeWorld {
     const phase = getTimeOfDayPhase(this.timeOfDay);
     const weatherCfg = getWeatherVisualConfig(this.weatherState.condition, phase);
     const angle = this.timeOfDay * Math.PI * 2;
-    this.sunLight.position.set(Math.cos(angle) * 65, Math.max(12, Math.sin(angle) * 75), 32);
+    const sunOffX = Math.cos(angle) * 58;
+    const sunOffY = Math.max(14, Math.sin(angle) * 68);
+    const sunOffZ = 32;
+
+    // Texel-snapped player-following sun shadow frustum (2m steps eliminate shadow swimming while keeping ±42m crisp!)
+    const snapX = Math.round(this.playerX / 2) * 2;
+    const snapZ = Math.round(this.playerZ / 2) * 2;
+    this.sunLight.target.position.set(snapX, 0, snapZ);
+    this.sunLight.position.set(snapX + sunOffX, sunOffY, snapZ + sunOffZ);
+    this.rimLight.position.set(snapX - sunOffX * 0.7, 30, snapZ - sunOffZ * 0.8);
 
     let baseSunIntensity = 1.95;
     let baseHemiIntensity = 0.88;
+    let baseRimIntensity = 0.52;
+    let targetSunGlow = 1.0;
     if (phase === 'day') {
       _skyWork.copy(_skyDay);
+      _skyTopWork.copy(_skyTopDay);
       this.sunLight.color.setHex(0xfff1d6);
+      this.rimLight.color.setHex(0x9ad1ff);
       baseSunIntensity = 1.95;
       baseHemiIntensity = 0.88;
+      baseRimIntensity = 0.52;
+      targetSunGlow = 1.0;
     } else if (phase === 'sunset') {
       _skyWork.copy(_skySunset);
+      _skyTopWork.copy(_skyTopSunset);
       this.sunLight.color.setHex(0xff9f5a);
-      baseSunIntensity = 1.45;
-      baseHemiIntensity = 0.62;
+      this.rimLight.color.setHex(0x8fa8e8);
+      baseSunIntensity = 1.48;
+      baseHemiIntensity = 0.64;
+      baseRimIntensity = 0.42;
+      targetSunGlow = 1.25;
     } else {
       _skyWork.copy(_skyNight);
+      _skyTopWork.copy(_skyTopNight);
       this.sunLight.color.setHex(0x7aa2f7);
-      baseSunIntensity = 0.52;
-      baseHemiIntensity = 0.38;
+      this.rimLight.color.setHex(0x3b5998);
+      baseSunIntensity = 0.54;
+      baseHemiIntensity = 0.4;
+      baseRimIntensity = 0.25;
+      targetSunGlow = 0.18;
     }
 
     // Apply dynamic weather atmospheric tint, sun dimming, and fog density
     if (weatherCfg.skyBlend > 0) {
       _weatherSky.setHex(weatherCfg.skyHex);
       _skyWork.lerp(_weatherSky, weatherCfg.skyBlend * this.weatherState.intensity);
+      _skyTopWork.lerp(_weatherSky, weatherCfg.skyBlend * 0.78 * this.weatherState.intensity);
+      targetSunGlow *= Math.max(0.12, 1 - weatherCfg.skyBlend * 0.85);
     }
     const lightLerp = 1 - Math.exp(-3 * dt);
     const targetSun = baseSunIntensity * weatherCfg.sunIntensityMult;
     const targetHemi = baseHemiIntensity * weatherCfg.hemiIntensityMult;
     this.sunLight.intensity += (targetSun - this.sunLight.intensity) * lightLerp;
     this.hemiLight.intensity += (targetHemi - this.hemiLight.intensity) * lightLerp;
+    this.rimLight.intensity += (baseRimIntensity * weatherCfg.hemiIntensityMult - this.rimLight.intensity) * lightLerp;
 
     (this.scene.background as THREE.Color).lerp(_skyWork, lightLerp);
     if (this.scene.fog instanceof THREE.Fog) {
       this.scene.fog.color.copy(this.scene.background as THREE.Color);
-      this.scene.fog.near += (weatherCfg.fogNear - this.scene.fog.near) * lightLerp;
-      this.scene.fog.far += (weatherCfg.fogFar - this.scene.fog.far) * lightLerp;
+      const activeVeh = this.activeVehicleId
+        ? this.liveVehicles.find((v) => v.id === this.activeVehicleId)
+        : null;
+      const isScenicVista =
+        Boolean(activeVeh?.isAircraft) ||
+        this.railwayState.riderMode !== 'none' ||
+        this.sittingBenchId !== null ||
+        isPointOnBeachZone(this.playerX, this.playerZ);
+      const lodFogFarCap = this.lodState ? this.lodState.distances.fogFarCap : weatherCfg.fogFar;
+      const scenicBoost = isScenicVista ? 430 : 320;
+      const targetFogFar = Math.max(Math.min(weatherCfg.fogFar, lodFogFarCap), weatherCfg.condition === 'mist' ? 145 : scenicBoost);
+      const targetFogNear = Math.min(weatherCfg.fogNear, targetFogFar * 0.48);
+      this.scene.fog.near += (targetFogNear - this.scene.fog.near) * lightLerp;
+      this.scene.fog.far += (targetFogFar - this.scene.fog.far) * lightLerp;
+    }
+
+    // Update sky dome shader uniforms (position & radius are locked to camera in updateCamera so it NEVER clips!)
+    this.skyDome.uniforms.uHorizonColor.value.copy(this.scene.background as THREE.Color);
+    this.skyDome.uniforms.uTopColor.value.lerp(_skyTopWork, lightLerp);
+    this.skyDome.uniforms.uBottomColor.value
+      .copy(this.scene.background as THREE.Color)
+      .multiplyScalar(0.72);
+    _sunDirWork.set(sunOffX, sunOffY, sunOffZ).normalize();
+    this.skyDome.uniforms.uSunDir.value.copy(_sunDirWork);
+    this.skyDome.uniforms.uSunColor.value.copy(this.sunLight.color);
+    this.skyDome.uniforms.uSunGlow.value +=
+      (targetSunGlow - this.skyDome.uniforms.uSunGlow.value) * lightLerp;
+
+    // Animate shimmering Arabian Sea waves & bobbing fishing boats!
+    if (this.seaRig) {
+      this.seaRig.seaUniforms.uTime.value = this.elapsed;
+      this.seaRig.seaUniforms.uSunColor.value.copy(this.sunLight.color);
+      this.seaRig.seaUniforms.uSkyHorizon.value.copy(this.scene.background as THREE.Color);
+      this.seaRig.seaUniforms.uNightFactor.value = phase === 'night' ? 0.9 : phase === 'sunset' ? 0.35 : 0;
+      for (const b of this.seaRig.boats) {
+        b.mesh.position.y = Math.sin(this.elapsed * 1.9 + b.phase) * 0.18;
+        b.mesh.rotation.z = Math.sin(this.elapsed * 1.5 + b.phase) * 0.08;
+        b.mesh.rotation.x = Math.cos(this.elapsed * 1.3 + b.phase) * 0.05;
+      }
     }
 
     // Update 3D falling Monsoon Rain streaks around the player when raining
@@ -2628,12 +3447,17 @@ export class ThreeWorld {
             veh.peakAltitude = planeRes.y;
           }
 
-          // Ground-only soft building collision (when airborne > 2.2m, fly cleanly over everything!)
+          // Ground-only soft building collision & no-aeroplanes-on-beach rule!
           let finalX = planeRes.x;
           let finalZ = planeRes.z;
           let finalSpeed = planeRes.speed;
           let hitBuildingLow = false;
           if (planeRes.y < 2.2) {
+            // Keep aeroplanes off Malabar Beach sand/promenade (beach is walk + ground vehicles only!)
+            if (!canVehicleAccessBeach(veh.type) && isPointOnBeachZone(finalX, finalZ)) {
+              finalZ = Math.min(finalZ, 144);
+              finalSpeed *= 0.4;
+            }
             const gRes = resolveCircleWorldCollision(
               finalX,
               finalZ,
@@ -2712,13 +3536,19 @@ export class ThreeWorld {
         }
 
         // =====================================================================
-        // EASY ARCADE GROUND DRIVING (Speed-sensitive steering, ABS brake, wall glide)
+        // REAL 3D OPEN-WORLD GROUND DRIVING PHYSICS
+        // (Spring-Damper Suspension, Weight Transfer, Drift Slip, Ramp Jumps & Impulse Collisions!)
         // =====================================================================
+        this.driftSmokeCooldown = Math.max(0, this.driftSmokeCooldown - dt);
+        this.vehicleBumpCooldown = Math.max(0, this.vehicleBumpCooldown - dt);
         const handbrake = this.keysHeld.has('Space');
         // Cancel autopilot if user manually presses W/S/A/D
         if (this.autopilotDest && (Math.abs(forward) > 0.1 || Math.abs(strafe) > 0.1)) {
           this.autopilotDest = null;
         }
+
+        let nextX = veh.x;
+        let nextZ = veh.z;
 
         if (this.autopilotDest) {
           // Road-aware Auto-Destination Driving up to maxSpeed (180 km/h on Supercar/Ambulance) with automatic horn/siren!
@@ -2740,7 +3570,6 @@ export class ThreeWorld {
               }
             }
           } else {
-            // Follow paved Kerala town roads (including Airport Access at z=-122!)
             const roadZs = [-122, -72, -32, -4, 34, 72];
             let destRoadZ = -4;
             let bestRoadDist = Infinity;
@@ -2818,15 +3647,36 @@ export class ThreeWorld {
               turnFactor;
             veh.speed += (targetCruise - veh.speed) * Math.min(1, dt * 3.2);
           }
+
+          nextX = veh.x + Math.sin(veh.yaw) * veh.speed * dt;
+          nextZ = veh.z + Math.cos(veh.yaw) * veh.speed * dt;
+          veh.y = sampleWorldSurface(nextX, nextZ).groundY;
+          veh.vy = 0;
+          veh.pitch *= Math.exp(-8 * dt);
+          veh.roll *= Math.exp(-8 * dt);
+          veh.suspY *= Math.exp(-8 * dt);
+          veh.lateralSpeed *= Math.exp(-8 * dt);
         } else {
-          // Super-easy speed-sensitive arcade driving!
-          const nextPhys = stepGroundVehiclePhysics(
+          // Real 3D Chassis, Suspension, Drift & Ramp Jump Physics!
+          const chassis = stepVehicleChassisPhysics(
             {
-              speed: veh.speed,
+              x: veh.x,
+              y: veh.y,
+              z: veh.z,
+              vy: veh.vy,
               yaw: veh.yaw,
+              speed: veh.speed,
+              lateralSpeed: veh.lateralSpeed,
               steerAngle: veh.steerAngle,
               steerInput: veh.steerInput,
               maxSpeed: veh.maxSpeed,
+              pitch: veh.pitch,
+              roll: veh.roll,
+              pitchVel: veh.pitchVel,
+              rollVel: veh.rollVel,
+              suspY: veh.suspY,
+              suspVy: veh.suspVy,
+              grounded: veh.grounded,
             },
             {
               forward,
@@ -2836,14 +3686,40 @@ export class ThreeWorld {
             },
             dt,
           );
-          veh.speed = nextPhys.speed;
-          veh.yaw = nextPhys.yaw;
-          veh.steerAngle = nextPhys.steerAngle;
-          veh.steerInput = nextPhys.steerInput;
+          nextX = chassis.x;
+          nextZ = chassis.z;
+          veh.y = chassis.y;
+          veh.vy = chassis.vy;
+          veh.yaw = chassis.yaw;
+          veh.speed = chassis.speed;
+          veh.lateralSpeed = chassis.lateralSpeed;
+          veh.steerAngle = chassis.steerAngle;
+          veh.steerInput = chassis.steerInput;
+          veh.pitch = chassis.pitch;
+          veh.roll = chassis.roll;
+          veh.pitchVel = chassis.pitchVel;
+          veh.rollVel = chassis.rollVel;
+          veh.suspY = chassis.suspY;
+          veh.suspVy = chassis.suspVy;
+          veh.grounded = chassis.grounded;
+
+          if (chassis.launchedOffRamp) {
+            soundEngine.playJump();
+            this.spawnParticleBurst(nextX, veh.y + 0.2, nextZ, 10, 0xfde047);
+          }
+          if (chassis.landedHard) {
+            soundEngine.playLand();
+            this.camShakeTrauma = Math.min(0.6, this.camShakeTrauma + Math.min(0.35, chassis.landImpactSpeed * 0.025));
+            this.spawnParticleBurst(nextX, veh.y + 0.15, nextZ, 12, 0xe2e8f0);
+          }
+          if (chassis.drifting && this.driftSmokeCooldown <= 0) {
+            this.driftSmokeCooldown = 0.09;
+            const rearX = nextX - Math.sin(veh.yaw) * 1.4;
+            const rearZ = nextZ - Math.cos(veh.yaw) * 1.4;
+            this.spawnParticleBurst(rearX, veh.y + 0.12, rearZ, 3, 0xdbeafe);
+          }
         }
 
-        const nextX = veh.x + Math.sin(veh.yaw) * veh.speed * dt;
-        const nextZ = veh.z + Math.cos(veh.yaw) * veh.speed * dt;
         const res = resolveCircleWorldCollision(nextX, nextZ, 1.45, this.colliders);
         const vehPalmHit = checkPalmTreeCollision(res.x, res.z, 1.45, this.livePalms, 0.55);
         if (res.collided || vehPalmHit.hit) {
@@ -2851,9 +3727,11 @@ export class ThreeWorld {
             veh.yaw += 0.55 * dt * 4;
             veh.speed = Math.max(6, veh.speed * 0.55);
           } else {
-            // Smooth wall glide instead of jarring backwards bounce!
-            veh.speed *= 0.65;
-            this.camShakeTrauma = Math.min(0.45, this.camShakeTrauma + 0.12);
+            // Smooth elastic wall bump with suspension jolt
+            veh.speed *= 0.62;
+            veh.lateralSpeed *= 0.4;
+            veh.pitchVel -= 1.2;
+            this.camShakeTrauma = Math.min(0.45, this.camShakeTrauma + 0.14);
           }
           if (vehPalmHit.hit && vehPalmHit.palmIndex >= 0) {
             const bumpedPalm = this.livePalms[vehPalmHit.palmIndex];
@@ -2864,8 +3742,92 @@ export class ThreeWorld {
         }
         veh.x = vehPalmHit.pushedX;
         veh.z = vehPalmHit.pushedZ;
-        veh.mesh.position.set(veh.x, 0, veh.z);
-        veh.mesh.rotation.y = veh.yaw;
+
+        // Real Vehicle-to-Vehicle Elastic Momentum Collision (against other parked & traffic vehicles!)
+        if (!this.autopilotDest && veh.y < 1.8) {
+          const fwdX = Math.sin(veh.yaw);
+          const fwdZ = Math.cos(veh.yaw);
+          let curVx = fwdX * veh.speed + Math.cos(veh.yaw) * veh.lateralSpeed;
+          let curVz = fwdZ * veh.speed - Math.sin(veh.yaw) * veh.lateralSpeed;
+
+          for (const other of this.liveVehicles) {
+            if (other.id === veh.id || other.isAircraft || !other.mesh.visible) continue;
+            const pair = resolveVehiclePairCollision(
+              veh.x,
+              veh.z,
+              curVx,
+              curVz,
+              veh.mass,
+              other.x,
+              other.z,
+              Math.sin(other.yaw) * other.speed,
+              Math.cos(other.yaw) * other.speed,
+              other.mass,
+              3.0,
+              0.38,
+            );
+            if (pair.collided) {
+              veh.x = pair.ax;
+              veh.z = pair.az;
+              curVx = pair.avx;
+              curVz = pair.avz;
+              veh.speed = curVx * fwdX + curVz * fwdZ;
+              veh.lateralSpeed = curVx * Math.cos(veh.yaw) - curVz * Math.sin(veh.yaw);
+
+              // Push struck parked vehicle smoothly clear of walls & give it suspension jolt!
+              const otherSafe = resolveCircleWorldCollision(pair.bx, pair.bz, 1.45, this.colliders);
+              other.x = otherSafe.x;
+              other.z = otherSafe.z;
+              other.mesh.position.set(other.x, sampleWorldSurface(other.x, other.z).groundY, other.z);
+              if (pair.impactSpeed > 3.0 && this.vehicleBumpCooldown <= 0) {
+                this.vehicleBumpCooldown = 0.35;
+                veh.suspVy -= Math.min(2.2, pair.impactSpeed * 0.14);
+                this.camShakeTrauma = Math.min(0.5, this.camShakeTrauma + Math.min(0.26, pair.impactSpeed * 0.02));
+                soundEngine.playLand();
+                this.spawnParticleBurst((veh.x + other.x) * 0.5, veh.y + 0.9, (veh.z + other.z) * 0.5, 9, 0xfde047);
+              }
+            }
+          }
+
+          for (const ai of this.aiTraffic) {
+            if (!ai.active) continue;
+            const pair = resolveVehiclePairCollision(
+              veh.x,
+              veh.z,
+              curVx,
+              curVz,
+              veh.mass,
+              ai.x,
+              ai.z,
+              Math.sin(ai.yaw) * ai.speed,
+              Math.cos(ai.yaw) * ai.speed,
+              ai.isBus ? 24 : 12,
+              3.1,
+              0.36,
+            );
+            if (pair.collided) {
+              veh.x = pair.ax;
+              veh.z = pair.az;
+              curVx = pair.avx;
+              curVz = pair.avz;
+              veh.speed = curVx * fwdX + curVz * fwdZ;
+              veh.lateralSpeed = curVx * Math.cos(veh.yaw) - curVz * Math.sin(veh.yaw);
+              ai.speed = Math.max(0, ai.speed * 0.35);
+              ai.stopTimer = Math.max(ai.stopTimer, 0.9);
+              if (pair.impactSpeed > 3.2 && this.vehicleBumpCooldown <= 0) {
+                this.vehicleBumpCooldown = 0.4;
+                veh.suspVy -= Math.min(2.4, pair.impactSpeed * 0.15);
+                this.camShakeTrauma = Math.min(0.55, this.camShakeTrauma + Math.min(0.28, pair.impactSpeed * 0.022));
+                soundEngine.playHorn();
+                this.spawnParticleBurst((veh.x + ai.x) * 0.5, veh.y + 0.9, (veh.z + ai.z) * 0.5, 10, 0xfbbf24);
+              }
+            }
+          }
+        }
+
+        veh.mesh.position.set(veh.x, Math.max(0, veh.y + veh.suspY), veh.z);
+        veh.mesh.rotation.order = 'YXZ';
+        veh.mesh.rotation.set(-veh.pitch, veh.yaw, veh.roll);
 
         // Spin wheels & visibly turn front wheels!
         for (const w of veh.rig.wheels) {
@@ -2876,9 +3838,11 @@ export class ThreeWorld {
         }
 
         this.playerX = veh.x;
-        this.playerY = 0;
+        this.playerY = veh.y;
         this.playerZ = veh.z;
         this.playerYaw = veh.yaw;
+        this.playerVx = Math.sin(veh.yaw) * veh.speed;
+        this.playerVz = Math.cos(veh.yaw) * veh.speed;
 
         // Check manual arrival at Hospital while driving Ambulance in emergency rescue!
         if (
@@ -2916,81 +3880,112 @@ export class ThreeWorld {
       return;
     }
 
-    // ON-FOOT SHERU BHAI THIRD-PERSON MOVEMENT
+    // RIDING OR DRIVING A KERALA TRAIN — sync player coordinates to the train!
+    if (this.railwayState.riderMode !== 'none' && this.railwayState.ridingTrainId) {
+      const tr = this.railwayState.trains.find((t) => t.id === this.railwayState.ridingTrainId);
+      if (tr) {
+        this.playerX = tr.x;
+        this.playerY = 2.4;
+        this.playerZ = tr.z;
+        this.playerYaw = tr.yaw;
+      }
+      return;
+    }
+
+    // SITTING ON A MALABAR BEACH BENCH — relaxed ocean-gazing seated pose!
+    if (this.sittingBenchId) {
+      const b = BEACH_BENCHES.find((item) => item.id === this.sittingBenchId);
+      if (b) {
+        this.sheru.root.visible = true;
+        this.sheru.root.position.set(b.x, 0.56, b.z + 0.05);
+        this.sheru.root.rotation.y = b.facingYaw;
+        this.sheru.bodyGroup.position.y = -0.24 + Math.sin(this.elapsed * 2.2) * 0.015;
+        this.sheru.leftLeg.rotation.x = -1.35;
+        this.sheru.rightLeg.rotation.x = -1.35;
+        this.sheru.leftArm.rotation.x = -0.35;
+        this.sheru.rightArm.rotation.x = -0.35;
+        this.sheru.tail.rotation.y = Math.sin(this.elapsed * 2.8) * 0.25;
+      }
+      return;
+    }
+
+    // ON-FOOT SHERU BHAI REAL MOMENTUM, RAMP & SURFACE-GRIP THIRD-PERSON PHYSICS
     const mag = Math.hypot(forward, strafe);
-    let moveSpeed = 0;
+    let desiredMoveX = 0;
+    let desiredMoveZ = 0;
     if (mag > 0.05) {
       const nf = forward / Math.max(1, mag);
       const ns = strafe / Math.max(1, mag);
-      // Forward vector from camera yaw: camera is behind (-sin(camYaw), -cos(camYaw))
-      // Looking forward is (sin(camYaw), cos(camYaw))
       const sinY = Math.sin(this.camYaw);
       const cosY = Math.cos(this.camYaw);
-      const moveX = sinY * nf - cosY * ns;
-      const moveZ = cosY * nf + sinY * ns;
+      desiredMoveX = (sinY * nf - cosY * ns) * Math.min(1, mag);
+      desiredMoveZ = (cosY * nf + sinY * ns) * Math.min(1, mag);
+    }
 
-      const targetSpeed = running ? 13.2 : 7.6;
-      moveSpeed = targetSpeed * Math.min(1, mag);
+    const charStep = stepCharacterPhysics(
+      {
+        x: this.playerX,
+        y: this.playerY,
+        z: this.playerZ,
+        vx: this.playerVx,
+        vy: this.playerVy,
+        vz: this.playerVz,
+        yaw: this.playerYaw,
+        coyoteTimer: this.coyoteTimer,
+        jumpBufferTimer: this.jumpBufferTimer,
+      },
+      {
+        moveX: desiredMoveX,
+        moveZ: desiredMoveZ,
+        running,
+      },
+      this.colliders,
+      dt,
+    );
 
-      const nextX = this.playerX + moveX * moveSpeed * dt;
-      const nextZ = this.playerZ + moveZ * moveSpeed * dt;
-      const res = resolveCircleWorldCollision(nextX, nextZ, 0.8, this.colliders);
-      const palmHit = checkPalmTreeCollision(res.x, res.z, 0.85, this.livePalms, 0.55);
-      this.playerX = palmHit.pushedX;
-      this.playerZ = palmHit.pushedZ;
+    const palmHit = checkPalmTreeCollision(charStep.x, charStep.z, 0.85, this.livePalms, 0.55);
+    this.playerX = palmHit.pushedX;
+    this.playerY = charStep.y;
+    this.playerZ = palmHit.pushedZ;
+    this.playerVx = palmHit.hit ? charStep.vx * 0.25 : charStep.vx;
+    this.playerVy = charStep.vy;
+    this.playerVz = palmHit.hit ? charStep.vz * 0.25 : charStep.vz;
+    this.playerYaw = charStep.yaw;
+    this.coyoteTimer = charStep.coyoteTimer;
+    this.jumpBufferTimer = charStep.jumpBufferTimer;
 
-      // Colliding with a Coconut Tree trunk shakes the 3D palm & drops a coconut!
-      if (palmHit.hit && palmHit.palmIndex >= 0) {
-        const bumpedPalm = this.livePalms[palmHit.palmIndex];
-        if (!bumpedPalm.shaking || bumpedPalm.shakeTime > 0.45) {
-          this.launchCoconutFromPalm(bumpedPalm, palmHit.impactDirX, palmHit.impactDirZ, true);
-        }
+    // Colliding with a Coconut Tree trunk shakes the 3D palm & drops a coconut!
+    if (palmHit.hit && palmHit.palmIndex >= 0) {
+      const bumpedPalm = this.livePalms[palmHit.palmIndex];
+      if (!bumpedPalm.shaking || bumpedPalm.shakeTime > 0.45) {
+        this.launchCoconutFromPalm(bumpedPalm, palmHit.impactDirX, palmHit.impactDirZ, true);
       }
+    }
 
-      const targetYaw = Math.atan2(moveX, moveZ);
-      const yawDiff = Math.atan2(
-        Math.sin(targetYaw - this.playerYaw),
-        Math.cos(targetYaw - this.playerYaw),
-      );
-      this.playerYaw += yawDiff * (1 - Math.exp(-12 * dt));
-
+    const moveSpeed = charStep.horizontalSpeed;
+    if (moveSpeed > 0.25) {
       this.walkPhase += moveSpeed * dt * 1.45;
       this.footstepAccum += moveSpeed * dt;
-      if (this.playerY <= 0.05 && this.footstepAccum > (running ? 2.6 : 2.1)) {
+      if (charStep.grounded && this.footstepAccum > (running ? 2.6 : 2.1)) {
         this.footstepAccum = 0;
         soundEngine.playFootstep(running);
       }
     }
 
-    // Jump physics with Coyote Time & Input Buffering
-    if (this.playerY <= 0.01) {
-      this.coyoteTimer = 0.1;
-    } else {
-      this.coyoteTimer = Math.max(0, this.coyoteTimer - dt);
-    }
-    this.jumpBufferTimer = Math.max(0, this.jumpBufferTimer - dt);
-
-    if (this.jumpBufferTimer > 0 && this.coyoteTimer > 0) {
-      this.playerVy = 11.4;
-      this.coyoteTimer = 0;
-      this.jumpBufferTimer = 0;
+    if (charStep.jumped) {
       this.squashX = 0.84;
       this.squashY = 1.2;
       soundEngine.playJump();
-      this.spawnParticleBurst(this.playerX, 0.15, this.playerZ, 5, 0xf4e3b2);
+      this.spawnParticleBurst(this.playerX, this.playerY + 0.15, this.playerZ, 5, 0xf4e3b2);
     }
-
-    const wasAirborne = this.playerY > 0.05;
-    this.playerVy -= 29 * dt;
-    this.playerY += this.playerVy * dt;
-    if (this.playerY <= 0) {
-      this.playerY = 0;
-      if (wasAirborne && this.playerVy < -3) {
-        this.squashX = 1.2;
-        this.squashY = 0.8;
-        soundEngine.playLand();
+    if (charStep.landed) {
+      const squashAmt = Math.min(0.28, charStep.landImpactSpeed * 0.018);
+      this.squashX = 1 + squashAmt;
+      this.squashY = 1 - squashAmt;
+      soundEngine.playLand();
+      if (charStep.landImpactSpeed > 8) {
+        this.spawnParticleBurst(this.playerX, this.playerY + 0.12, this.playerZ, 7, 0xe2e8f0);
       }
-      this.playerVy = 0;
     }
 
     // Smooth squash & stretch recovery
@@ -3190,6 +4185,7 @@ export class ThreeWorld {
         }
       }
 
+      if (!palm.shaking && !palm.rig.highDetailGroup.visible) continue;
       const dxp = palm.x - this.playerX;
       const dzp = palm.z - this.playerZ;
       if (!palm.shaking && dxp * dxp + dzp * dzp > 58 * 58) continue;
@@ -3520,8 +4516,9 @@ export class ThreeWorld {
 
         ai.rig.root.position.set(ai.x, 0, ai.z);
         ai.rig.root.rotation.y = ai.yaw;
-        // Distance-cull wheel spin math beyond 95m for smooth 60 FPS with 34 vehicles!
-        if (distPlayer <= 95) {
+        // Dynamic LOD wheel-spin culling based on active device LOD profile
+        const wheelAnimDist = this.lodState ? this.lodState.distances.vehicleAnimDist : 66;
+        if (ai.rig.root.visible && distPlayer <= wheelAnimDist) {
           for (const w of ai.rig.wheels) w.rotation.x += ai.speed * dt * 2.2;
         }
 
@@ -3561,18 +4558,203 @@ export class ThreeWorld {
     }
   }
 
+  private updateOpenWorldPhysicsProps(dt: number) {
+    if (this.mode !== 'playing' || this.modalOpen || this.physicsProps.length === 0) return;
+
+    this.propSoundCooldown = Math.max(0, this.propSoundCooldown - dt);
+
+    // Populate zero-GC dynamic actor list (Player / Active Vehicle + nearby moving AI Traffic)
+    this.physicsActorsScratch.length = 0;
+    if (this.activeVehicleId) {
+      const veh = this.liveVehicles.find((v) => v.id === this.activeVehicleId);
+      if (veh) {
+        const fwdX = Math.sin(veh.yaw);
+        const fwdZ = Math.cos(veh.yaw);
+        this.physicsActorsScratch.push({
+          id: veh.id,
+          x: veh.x,
+          y: veh.y,
+          z: veh.z,
+          vx: fwdX * veh.speed + Math.cos(veh.yaw) * veh.lateralSpeed,
+          vz: fwdZ * veh.speed - Math.sin(veh.yaw) * veh.lateralSpeed,
+          radius: 1.55,
+          mass: veh.mass,
+          kickBoost: Math.min(3.5, Math.abs(veh.speed) * 0.14),
+        });
+      }
+    } else {
+      this.physicsActorsScratch.push({
+        id: 'player',
+        x: this.playerX,
+        y: this.playerY,
+        z: this.playerZ,
+        vx: this.playerVx,
+        vz: this.playerVz,
+        radius: 0.9,
+        mass: 5.5,
+        kickBoost: Math.hypot(this.playerVx, this.playerVz) > 2.5 ? 2.4 : 0.8,
+      });
+    }
+
+    for (let i = 0; i < this.aiTraffic.length; i++) {
+      const ai = this.aiTraffic[i];
+      if (!ai.active || ai.speed < 0.8) continue;
+      // Only include traffic reasonably near the player for crisp low-lag performance
+      if (Math.hypot(ai.x - this.playerX, ai.z - this.playerZ) > 65) continue;
+      this.physicsActorsScratch.push({
+        id: ai.id,
+        x: ai.x,
+        y: 0,
+        z: ai.z,
+        vx: Math.sin(ai.yaw) * ai.speed,
+        vz: Math.cos(ai.yaw) * ai.speed,
+        radius: 1.45,
+        mass: ai.isBus ? 22 : 11,
+        kickBoost: 1.4,
+      });
+    }
+
+    const impacts = stepRigidBodyProps(
+      this.physicsProps,
+      this.physicsActorsScratch,
+      this.colliders,
+      dt,
+    );
+
+    // Sync active 3D prop meshes & grounded contact shadows
+    for (let i = 0; i < this.physicsProps.length; i++) {
+      const p = this.physicsProps[i];
+      const vis = this.physicsPropVisuals[i];
+      if (!vis) continue;
+      vis.mesh.position.set(p.x, p.y, p.z);
+      vis.mesh.rotation.set(p.rx, p.ry, p.rz);
+
+      const floorY = sampleWorldSurface(p.x, p.z).groundY;
+      const heightAbove = Math.max(0, p.y - p.halfHeight - floorY);
+      vis.shadow.position.set(p.x, floorY + 0.025, p.z);
+      const shadowScale = Math.max(0.42, 1 - heightAbove * 0.14);
+      vis.shadow.scale.set(shadowScale, 1, shadowScale);
+    }
+
+    // Play tactile impact VFX & audio for kicked balls / smashed crates / cones!
+    if (impacts.length > 0) {
+      const top = impacts[0];
+      const burstColor =
+        top.kind === 'football'
+          ? 0xfef08a
+          : top.kind === 'cone'
+            ? 0xf97316
+            : top.kind === 'crate'
+              ? 0xd69e5c
+              : 0x60a5fa;
+      this.spawnParticleBurst(top.x, top.y, top.z, Math.min(8, 3 + Math.round(top.intensity * 5)), burstColor);
+      if (this.propSoundCooldown <= 0) {
+        this.propSoundCooldown = 0.16;
+        if (top.kind === 'football') {
+          soundEngine.playJump();
+        } else {
+          soundEngine.playLand();
+        }
+      }
+      if (top.hitByActorId !== 'player' && top.hitByActorId === this.activeVehicleId && top.intensity > 0.45) {
+        this.camShakeTrauma = Math.min(0.4, this.camShakeTrauma + top.intensity * 0.1);
+      }
+    }
+  }
+
   private updateNpcsAndAmbient(dt: number) {
-    // 4GB-RAM Performance Optimization: animate & render nearest 18 NPCs smoothly
-    const maxAnimated = this.settings.graphicsQuality === 'low' ? 14 : 18;
+    // All-device adaptive budget: scale NPC & crowd animation counts cleanly without popping!
+    const maxAnimated = this.perfBudget.maxAnimatedNpcs;
     let animatedCount = 0;
 
+    const actorCullDist = this.lodState ? this.lodState.distances.actorCullDist : 98;
     for (const n of this.liveNpcs) {
       const distToPlayer = Math.hypot(n.x - this.playerX, n.z - this.playerZ);
-      if (this.settings.graphicsQuality === 'low' && distToPlayer > 54 && !n.isBoss) {
+      const isTaggedPocketKidnapper = n.tag === 'pocket_kidnapper';
+      if (distToPlayer > actorCullDist && !n.isBoss && !isTaggedPocketKidnapper) {
         n.rig.root.visible = false;
         continue;
       }
       n.rig.root.visible = true;
+
+      // Tagged 'pocket_kidnapper' NPCs enter a full panicked flee state whenever a purse chase starts!
+      if (isTaggedPocketKidnapper) {
+        const panicStep = stepPocketKidnapperNpcPanic(
+          n.x,
+          n.z,
+          n.yaw,
+          this.playerX,
+          this.playerZ,
+          this.purseChase.active,
+          this.purseChase.phase,
+          this.elapsed,
+          dt,
+          n.panicPhase ?? 0,
+          WORLD_RADIUS,
+        );
+        n.panicState = panicStep.panicState;
+
+        if (panicStep.panicState === 'panicked') {
+          const safe = resolveCircleWorldCollision(panicStep.x, panicStep.z, 0.55, this.colliders);
+          n.x = safe.x;
+          n.z = safe.z;
+          n.yaw = panicStep.yaw;
+          n.rig.root.position.set(n.x, 0, n.z);
+          n.rig.root.rotation.y = n.yaw;
+
+          const pose = computePanickedChasePose(
+            this.elapsed + (n.panicPhase ?? 0),
+            'chasing',
+            false,
+          );
+          n.rig.bodyGroup.rotation.set(pose.torsoPitch, 0, pose.bodyTiltZ);
+          n.rig.bodyGroup.position.y = pose.bodyBobY;
+          n.rig.headGroup.rotation.y = pose.headYaw;
+          n.rig.leftLeg.rotation.x = pose.legSwing;
+          n.rig.rightLeg.rotation.x = -pose.legSwing;
+          n.rig.leftArm.rotation.set(pose.leftArmX, 0, pose.leftArmZ);
+          n.rig.rightArm.rotation.set(pose.rightArmX, 0, pose.rightArmZ);
+          if (n.rig.panicAlert) {
+            n.rig.panicAlert.visible = true;
+            n.rig.panicAlert.scale.setScalar(pose.panicPulse);
+            n.rig.panicAlert.rotation.y += dt * 4.5;
+          }
+          n.panicDustTimer = (n.panicDustTimer ?? 0) + dt;
+          if (n.panicDustTimer >= 0.34 && distToPlayer < 45) {
+            n.panicDustTimer = 0;
+            this.spawnParticleBurst(n.x, 0.14, n.z, 2, 0xd6c7a9);
+          }
+          continue;
+        }
+
+        if (panicStep.panicState === 'cowering') {
+          n.yaw = panicStep.yaw;
+          n.rig.root.rotation.y = n.yaw;
+          const tremor = Math.sin(this.elapsed * 22 + (n.panicPhase ?? 0)) * 0.08;
+          n.rig.bodyGroup.rotation.set(-0.1, 0, tremor);
+          n.rig.bodyGroup.position.y = -0.06;
+          n.rig.headGroup.rotation.y = Math.sin(this.elapsed * 6.5) * 0.32;
+          n.rig.leftLeg.rotation.x = 0.08;
+          n.rig.rightLeg.rotation.x = -0.08;
+          n.rig.leftArm.rotation.set(-2.55, 0, 0.42);
+          n.rig.rightArm.rotation.set(-2.55, 0, -0.42);
+          if (n.rig.panicAlert) {
+            n.rig.panicAlert.visible = true;
+            n.rig.panicAlert.scale.setScalar(0.75 + Math.abs(Math.sin(this.elapsed * 7)) * 0.15);
+            n.rig.panicAlert.rotation.y += dt * 2.4;
+          }
+          continue;
+        }
+
+        // Calm reset
+        n.rig.bodyGroup.rotation.set(0, 0, 0);
+        n.rig.headGroup.rotation.y = 0;
+        n.rig.leftArm.rotation.z = 0;
+        n.rig.rightArm.rotation.z = 0;
+        if (n.rig.panicAlert) {
+          n.rig.panicAlert.visible = false;
+        }
+      }
 
       if (distToPlayer > 48 || animatedCount >= maxAnimated) {
         continue;
@@ -3624,8 +4806,13 @@ export class ThreeWorld {
       }
     }
 
-    // Animate 48 lively walking Kerala townspeople across EVERY district (distance-culled limb math for smooth FPS!)
-    const isLowQ = this.settings.graphicsQuality === 'low';
+    // Animate 48 lively walking Kerala townspeople across EVERY district (dynamic LOD distance & cap!)
+    const crowdVisDist = this.lodState ? this.lodState.distances.actorCullDist : 98;
+    const crowdVisDistSq = crowdVisDist * crowdVisDist;
+    const scaledCrowdAnimDist =
+      this.perfBudget.crowdCullDist * (this.lodState ? this.lodState.lodScale : 1);
+    const crowdCullDistSq = scaledCrowdAnimDist * scaledCrowdAnimDist;
+    let animatedCrowdCount = 0;
     for (const ped of this.townCrowd) {
       ped.t += (ped.dir * ped.speed * dt) / ped.length;
       if (ped.t >= 1) {
@@ -3639,7 +4826,7 @@ export class ThreeWorld {
       ped.z = ped.az + (ped.bz - ped.az) * ped.t;
 
       const distSq = (ped.x - this.playerX) ** 2 + (ped.z - this.playerZ) ** 2;
-      if (isLowQ && distSq > 115 * 115) {
+      if (distSq > crowdVisDistSq) {
         ped.rig.root.visible = false;
         continue;
       }
@@ -3650,7 +4837,8 @@ export class ThreeWorld {
         (ped.bz - ped.az) * ped.dir,
       );
 
-      if (distSq <= 68 * 68) {
+      if (distSq <= crowdCullDistSq && animatedCrowdCount < this.perfBudget.maxAnimatedCrowd) {
+        animatedCrowdCount++;
         ped.walkPhase += dt * (4.8 + ped.speed * 1.2);
         const sw = Math.sin(ped.walkPhase) * 0.42;
         ped.rig.leftLeg.rotation.x = sw;
@@ -3734,7 +4922,14 @@ export class ThreeWorld {
         const stepped = stepPurseChase(this.purseChase, this.playerX, this.playerZ, dt);
         if (stepped.expired) {
           this.purseChase = stepped.state;
-          if (this.thiefRig) this.thiefRig.root.visible = false;
+          if (this.thiefRig) {
+            this.thiefRig.root.visible = false;
+            this.thiefRig.panicAlert.visible = false;
+          }
+          if (this.droppedPurseRig) {
+            this.droppedPurseRig.root.visible = false;
+            this.droppedPurseRig.haloRing.visible = false;
+          }
           if (this.victimRig) this.victimRig.root.visible = false;
           this.autoChaseTimer = 45;
         } else {
@@ -3744,38 +4939,126 @@ export class ThreeWorld {
             0.55,
             this.colliders,
           );
+          let nextDroppedItem = stepped.state.droppedItem;
+          if (nextDroppedItem.dropped) {
+            const safePurse = resolveCircleWorldCollision(
+              nextDroppedItem.x,
+              nextDroppedItem.z,
+              0.32,
+              this.colliders,
+            );
+            if (safePurse.x !== nextDroppedItem.x || safePurse.z !== nextDroppedItem.z) {
+              nextDroppedItem = {
+                ...nextDroppedItem,
+                x: safePurse.x,
+                z: safePurse.z,
+                vx: -nextDroppedItem.vx * 0.4,
+                vz: -nextDroppedItem.vz * 0.4,
+              };
+            }
+          }
           this.purseChase = {
             ...stepped.state,
             thiefX: safeThief.x,
             thiefZ: safeThief.z,
+            droppedItem: nextDroppedItem,
           };
+
+          // Running directly up to the panicked pocket kidnapper physically tackles & catches them!
+          if (shouldPhysicalTackleCatch(this.purseChase, this.playerX, this.playerZ)) {
+            this.performPurseChaseAction('slap');
+          }
+
+          const isCaught = this.purseChase.phase === 'caught';
+          const pose = computePanickedChasePose(
+            this.elapsed,
+            isCaught ? 'caught' : 'chasing',
+            !this.purseChase.droppedItem.dropped,
+            this.purseChase.stunTimer,
+          );
 
           if (this.thiefRig) {
             this.thiefRig.root.visible = true;
             this.thiefRig.root.position.set(this.purseChase.thiefX, 0, this.purseChase.thiefZ);
             this.thiefRig.root.rotation.y = this.purseChase.thiefYaw;
-            this.thiefRig.beaconArrow.position.y = 2.65 + Math.sin(this.elapsed * 7.5) * 0.22;
+            this.thiefRig.beaconArrow.position.y = 3.05 + Math.sin(this.elapsed * 7.5) * 0.22;
             this.thiefRig.beaconArrow.rotation.y += dt * 3.5;
 
-            if (this.purseChase.phase === 'caught') {
-              this.thiefRig.dizzyStars.visible = true;
+            // Panicked forward sprint lean, head-over-shoulder glances, catch recoil & dizzy surrender!
+            this.thiefRig.bodyGroup.rotation.set(pose.torsoPitch, 0, pose.bodyTiltZ);
+            this.thiefRig.bodyGroup.position.y = pose.bodyBobY;
+            this.thiefRig.headGroup.rotation.y = pose.headYaw;
+            this.thiefRig.leftLeg.rotation.x = pose.legSwing;
+            this.thiefRig.rightLeg.rotation.x = -pose.legSwing;
+            this.thiefRig.leftArm.rotation.set(pose.leftArmX, 0, pose.leftArmZ);
+            this.thiefRig.rightArm.rotation.set(pose.rightArmX, 0, pose.rightArmZ);
+
+            this.thiefRig.stolenPurse.visible = !this.purseChase.droppedItem.dropped;
+            this.thiefRig.panicAlert.visible = pose.showPanicAlert;
+            if (pose.showPanicAlert) {
+              this.thiefRig.panicAlert.scale.setScalar(pose.panicPulse);
+              this.thiefRig.panicAlert.rotation.y += dt * 4.6;
+              this.thiefDustTimer += dt;
+              if (this.thiefDustTimer >= 0.24) {
+                this.thiefDustTimer = 0;
+                this.spawnParticleBurst(
+                  this.purseChase.thiefX,
+                  0.14,
+                  this.purseChase.thiefZ,
+                  3,
+                  0xd6c7a9,
+                );
+              }
+            }
+
+            this.thiefRig.dizzyStars.visible = isCaught;
+            if (isCaught) {
               this.thiefRig.dizzyStars.rotation.y += dt * 5.2;
-              this.thiefRig.bodyGroup.rotation.z = Math.sin(this.elapsed * 9) * 0.16;
-              this.thiefRig.bodyGroup.position.y = -0.1;
-              this.thiefRig.leftLeg.rotation.x = 0.12;
-              this.thiefRig.rightLeg.rotation.x = -0.12;
-              this.thiefRig.leftArm.rotation.x = -2.4;
-              this.thiefRig.rightArm.rotation.x = -2.4;
-            } else {
-              this.thiefRig.dizzyStars.visible = false;
-              this.thiefRig.bodyGroup.rotation.z = 0;
-              this.thiefWalkPhase += dt * 13.5;
-              const sw = Math.sin(this.thiefWalkPhase) * 0.85;
-              this.thiefRig.leftLeg.rotation.x = sw;
-              this.thiefRig.rightLeg.rotation.x = -sw;
-              this.thiefRig.leftArm.rotation.x = -sw * 0.8;
-              this.thiefRig.rightArm.rotation.x = -0.5 + sw * 0.25;
-              this.thiefRig.bodyGroup.position.y = Math.abs(Math.sin(this.thiefWalkPhase)) * 0.1;
+            }
+          }
+
+          // Animate Standalone 3D Dropped Stolen Purse parabolic flight, ground bounce squash, dust & golden recovery ring!
+          if (this.droppedPurseRig) {
+            const item = this.purseChase.droppedItem;
+            this.droppedPurseRig.root.visible = item.dropped;
+            if (item.dropped) {
+              this.droppedPurseRig.root.position.set(item.x, 0, item.z);
+              this.droppedPurseRig.purseMesh.position.set(0, item.y, 0);
+              this.droppedPurseRig.purseMesh.rotation.set(
+                item.rotX,
+                item.landedYaw,
+                item.rotZ,
+              );
+
+              // Cartoon squash & stretch pulse when purse bounces on the ground!
+              const sq = item.impactSquash;
+              const sx = 1 + sq * 0.24;
+              const sy = Math.max(0.74, 1 - sq * 0.24);
+              this.droppedPurseRig.purseMesh.scale.set(sx, sy, sx);
+
+              if (item.justBounced) {
+                this.spawnParticleBurst(item.x, 0.14, item.z, 8, 0xfde047);
+                this.spawnParticleBurst(item.x, 0.12, item.z, 5, 0xf472b6);
+                soundEngine.playInteract();
+              }
+
+              // Expanding pink impact shockwave ring during ground contact
+              if (sq > 0.02) {
+                this.droppedPurseRig.impactRing.visible = true;
+                const expand = 1 + (1 - sq) * 1.9;
+                this.droppedPurseRig.impactRing.scale.setScalar(expand);
+                this.droppedPurseRig.impactRingMat.opacity = sq * 0.85;
+              } else {
+                this.droppedPurseRig.impactRing.visible = false;
+              }
+
+              const shadowScale = THREE.MathUtils.clamp(1.18 - item.y * 0.22, 0.45, 1.18);
+              this.droppedPurseRig.shadowMesh.scale.setScalar(shadowScale);
+              this.droppedPurseRig.haloRing.visible = item.grounded;
+              if (item.grounded) {
+                const ringPulse = 1 + Math.sin(this.elapsed * 5.5) * 0.14;
+                this.droppedPurseRig.haloRing.scale.setScalar(ringPulse);
+              }
             }
           }
 
@@ -3827,6 +5110,56 @@ export class ThreeWorld {
     }
   }
 
+  private updateRailwaySystem(dt: number) {
+    // Compute player throttle when driving a train (W/ArrowUp = accelerate, S/ArrowDown = brake/stop!)
+    let throttleInput = this.railwayState.driverThrottle;
+    if (this.railwayState.riderMode === 'driver' && this.mode === 'playing' && !this.modalOpen) {
+      let keyThrottle = 0;
+      if (this.keysHeld.has('KeyW') || this.keysHeld.has('ArrowUp')) keyThrottle += 1;
+      if (this.keysHeld.has('KeyS') || this.keysHeld.has('ArrowDown') || this.keysHeld.has('Space')) {
+        keyThrottle -= 1;
+      }
+      if (Math.abs(this.touchMoveY) > 0.15) {
+        keyThrottle = -this.touchMoveY;
+      }
+      if (keyThrottle !== 0) throttleInput = keyThrottle;
+    }
+
+    this.railwayState = stepRailwaySimulation(this.railwayState, dt, throttleInput);
+
+    // Sync all 4 articulated Kerala Express trains (Locomotive + 3 Coaches) along Track A & Track B
+    for (let i = 0; i < this.trainRigs.length; i++) {
+      const rig = this.trainRigs[i];
+      const tr = this.railwayState.trains[i];
+      if (!tr) continue;
+      updateKeralaTrainRigTransform(rig, tr.distance);
+      if (tr.honkPending) {
+        const dist = Math.hypot(tr.x - this.playerX, tr.z - this.playerZ);
+        if (dist < 72 || this.railwayState.ridingTrainId === tr.id) {
+          soundEngine.playBusHorn();
+        }
+      }
+    }
+
+    // Sync all 40 live animated station passengers (waiting, boarding stopped trains, alighting!)
+    for (const p of this.railwayState.passengers) {
+      const pRig = this.stationPassengerRigs.get(p.id);
+      if (!pRig) continue;
+      const distSq = (p.x - this.playerX) * (p.x - this.playerX) + (p.z - this.playerZ) * (p.z - this.playerZ);
+      const show = p.visible && distSq < 120 * 120;
+      pRig.root.visible = show;
+      if (!show) continue;
+      pRig.root.position.set(p.x, 0.55, p.z);
+      pRig.root.rotation.y = p.yaw;
+      const isWalking = p.phase === 'boarding' || p.phase === 'alighting' || p.phase === 'strolling_out';
+      const swing = isWalking ? Math.sin(p.walkPhase) * 0.65 : 0;
+      pRig.leftLeg.rotation.x = swing;
+      pRig.rightLeg.rotation.x = -swing;
+      pRig.leftArm.rotation.x = -swing * 0.7;
+      pRig.rightArm.rotation.x = swing * 0.7;
+    }
+  }
+
   private updateCamera(dt: number) {
     if (this.mode === 'title') {
       // Heroic front 3/4 Title Showcase framing Sheru Bhai's lion face, shades & gold chains
@@ -3842,6 +5175,8 @@ export class ThreeWorld {
       _v2.set(this.playerX - 1.35, 1.75, this.playerZ + 0.4);
       this.camLookTarget.lerp(_v2, 1 - Math.exp(-5 * dt));
       this.camera.lookAt(this.camLookTarget);
+      this.skyDome.mesh.position.copy(this.camera.position);
+      this.skyDome.mesh.scale.setScalar(Math.max(140, this.camera.far * 0.85));
       return;
     }
 
@@ -3859,6 +5194,90 @@ export class ThreeWorld {
     let desiredX = this.playerX - Math.sin(this.camYaw) * horizDist;
     let desiredZ = this.playerZ - Math.cos(this.camYaw) * horizDist;
     let desiredY = Math.max(1.4, this.playerY + vertOffset);
+
+    // 1. TRAIN DRIVER CAB / PASSENGER WINDOW-SEAT CAMERA (see sea, mountains, stations & opposite passing trains!)
+    if (this.railwayState.riderMode !== 'none' && this.railwayState.ridingTrainId) {
+      const tr = this.railwayState.trains.find((t) => t.id === this.railwayState.ridingTrainId);
+      if (tr) {
+        const fwdSample = sampleTrackPoint(tr.track, tr.distance);
+        const coach1Sample = sampleTrackPoint(tr.track, tr.distance - 11.1);
+        // Right vector relative to forward travel (+tx, +tz): right = (-tz, tx)
+        const rightX = -coach1Sample.tz;
+        const rightZ = coach1Sample.tx;
+
+        if (this.railwayState.riderMode === 'driver') {
+          if (this.trainDriverCabView) {
+            // Locomotive Driver Cab Front View looking straight down the gleaming rails!
+            _v1.set(
+              fwdSample.x + fwdSample.tx * 5.6,
+              3.05,
+              fwdSample.z + fwdSample.tz * 5.6,
+            );
+            _v2.set(
+              fwdSample.x + fwdSample.tx * 42,
+              2.2,
+              fwdSample.z + fwdSample.tz * 42,
+            );
+          } else {
+            // Scenic Elevated Chase Cam behind Locomotive!
+            _v1.set(
+              fwdSample.x - fwdSample.tx * 17 + rightX * 3.5,
+              8.2,
+              fwdSample.z - fwdSample.tz * 17 + rightZ * 3.5,
+            );
+            _v2.set(fwdSample.x + fwdSample.tx * 12, 2.4, fwdSample.z + fwdSample.tz * 12);
+          }
+        } else {
+          // PASSENGER WINDOW SEAT VIEW ("kazhchakal kand kond pokam")
+          const view = this.railwayState.seatView;
+          if (view === 'outside') {
+            _v1.set(
+              coach1Sample.x - coach1Sample.tx * 14 + rightX * 9.5,
+              7.2,
+              coach1Sample.z - coach1Sample.tz * 14 + rightZ * 9.5,
+            );
+            _v2.set(coach1Sample.x + coach1Sample.tx * 6, 2.2, coach1Sample.z + coach1Sample.tz * 6);
+          } else {
+            // Look right out the Left Window (opposite track + town!) or Right Window (Arabian Sea + Western Ghats!)
+            const sideSign = view === 'right_window' ? 1 : -1;
+            _v1.set(
+              coach1Sample.x + rightX * sideSign * 1.48,
+              2.52,
+              coach1Sample.z + rightZ * sideSign * 1.48,
+            );
+            _v2.set(
+              coach1Sample.x + rightX * sideSign * 28 + coach1Sample.tx * 12,
+              2.2,
+              coach1Sample.z + rightZ * sideSign * 28 + coach1Sample.tz * 12,
+            );
+          }
+        }
+        this.camCurrentPos.lerp(_v1, 1 - Math.exp(-12 * dt));
+        this.camera.position.copy(this.camCurrentPos);
+        this.camLookTarget.lerp(_v2, 1 - Math.exp(-12 * dt));
+        this.camera.lookAt(this.camLookTarget);
+        // Lock sky dome cleanly to camera position & scale < camera.far so ZERO blue circle clipping ever occurs!
+        this.skyDome.mesh.position.copy(this.camera.position);
+        this.skyDome.mesh.scale.setScalar(Math.max(140, this.camera.far * 0.85));
+        return;
+      }
+    }
+
+    // 2. BEACH BENCH SEATED SCENIC CAMERA (frames Sheru sitting on the bench overlooking the Arabian Sea!)
+    if (this.sittingBenchId) {
+      const b = BEACH_BENCHES.find((item) => item.id === this.sittingBenchId);
+      if (b) {
+        _v1.set(b.x + 2.8, 2.35, b.z - 4.4);
+        _v2.set(b.x, 1.4, b.z + 24);
+        this.camCurrentPos.lerp(_v1, 1 - Math.exp(-5 * dt));
+        this.camera.position.copy(this.camCurrentPos);
+        this.camLookTarget.lerp(_v2, 1 - Math.exp(-5 * dt));
+        this.camera.lookAt(this.camLookTarget);
+        this.skyDome.mesh.position.copy(this.camera.position);
+        this.skyDome.mesh.scale.setScalar(Math.max(140, this.camera.far * 0.85));
+        return;
+      }
+    }
 
     if (this.inHospital) {
       // Keep interior camera cleanly below the 5.4m ceiling and inside the bright Hospital Ward walls
@@ -3906,6 +5325,10 @@ export class ThreeWorld {
     _v2.set(this.playerX, this.playerY + (this.inHospital ? 1.65 : 1.85), this.playerZ);
     this.camLookTarget.lerp(_v2, 1 - Math.exp(-14 * dt));
     this.camera.lookAt(this.camLookTarget);
+
+    // PERMANENT FIX FOR BLUE CIRCLE: Keep unit skyDome locked to camera.position & strictly inside camera.far!
+    this.skyDome.mesh.position.copy(this.camera.position);
+    this.skyDome.mesh.scale.setScalar(Math.max(140, this.camera.far * 0.85));
   }
 
   private emitHudIfDue(dt: number) {
@@ -3925,17 +5348,31 @@ export class ThreeWorld {
         !activeVeh.autoLanding &&
         !isPointOnAirportTarmac(activeVeh.x, activeVeh.z),
     );
+    const railwayHud = buildRailwayHudState(this.railwayState, this.playerX, this.playerZ);
+    const activeBench = this.sittingBenchId
+      ? BEACH_BENCHES.find((b) => b.id === this.sittingBenchId) ?? null
+      : null;
+
     this.callbacks.onHudUpdate({
       playerX: this.playerX,
       playerZ: this.playerZ,
       playerYaw: this.playerYaw,
       speed: speedVal,
-      speedKmh: Math.min(180, Math.round(speedVal * 4)),
+      speedKmh:
+        this.railwayState.riderMode !== 'none' && railwayHud
+          ? railwayHud.trainSpeedKmh
+          : Math.min(180, Math.round(speedVal * 4)),
       district: this.inHospital
         ? 'Hospital Interior'
-        : activeVeh?.isAircraft && activeVeh.y > 4
-          ? 'Kerala Sky Airspace'
-          : getDistrictAt(this.playerX, this.playerZ),
+        : railwayHud?.riderMode !== undefined && railwayHud.riderMode !== 'none'
+          ? `${railwayHud.trainNumber} ${railwayHud.trainName}`
+          : railwayHud?.atStationName
+            ? railwayHud.atStationName
+            : isPointOnBeachZone(this.playerX, this.playerZ)
+              ? 'Malabar Golden Beach'
+              : activeVeh?.isAircraft && activeVeh.y > 4
+                ? 'Kerala Sky Airspace'
+                : getDistrictAt(this.playerX, this.playerZ),
       inVehicleId: this.activeVehicleId,
       inVehicleName: activeVeh?.name ?? null,
       inVehicleIsAircraft: activeVeh?.isAircraft ?? false,
@@ -3948,11 +5385,36 @@ export class ThreeWorld {
         ? 'Auto-Land Runway 09'
         : this.autopilotDest?.name ?? null,
       inPool: this.inPool,
-      nearby: this.activeVehicleId ? null : this.findNearestInteractable(),
+      sittingOnBench: activeBench ? { benchId: activeBench.id, label: activeBench.label } : null,
+      nearby:
+        this.activeVehicleId || this.railwayState.riderMode !== 'none' || this.sittingBenchId
+          ? null
+          : this.findNearestInteractable(),
       timePhase: getTimeOfDayPhase(this.timeOfDay),
       timeOfDay: this.timeOfDay,
       weather: buildWeatherHudState(this.weatherState, getTimeOfDayPhase(this.timeOfDay)),
       activeChase: buildPurseChaseHudState(this.purseChase, this.playerX, this.playerZ),
+      railway: railwayHud,
+      trains: this.railwayState.trains.map((t) => {
+        const def = TRAIN_DEFS.find((d) => d.id === t.id)!;
+        return {
+          id: t.id,
+          number: t.number,
+          name: t.name,
+          x: t.x,
+          z: t.z,
+          yaw: t.yaw,
+          track: t.track,
+          color: def.coachColor,
+        };
+      }),
+      stations: RAILWAY_STATIONS.map((s) => ({
+        id: s.id,
+        code: s.code,
+        name: s.name,
+        x: s.centerX,
+        z: s.centerZ,
+      })),
       npcs: this.liveNpcs.map((n) => ({ id: n.id, x: n.x, z: n.z, isBoss: n.isBoss })),
       vehicles: [
         ...this.liveVehicles.map((v) => ({
@@ -3968,6 +5430,51 @@ export class ThreeWorld {
       ],
       trafficLightState: this.trafficLightState,
     });
+
+    if (typeof window !== 'undefined') {
+      (window as Window & { __keralaWorldState?: unknown }).__keralaWorldState = {
+        skyDomeRadius: Number(this.skyDome.mesh.scale.x.toFixed(1)),
+        cameraFar: Number(this.camera.far.toFixed(1)),
+        skyCenteredOnCamera:
+          this.skyDome.mesh.position.distanceTo(this.camera.position) < 0.05,
+        sittingBenchId: this.sittingBenchId,
+        railway: railwayHud,
+        trainsCount: this.railwayState.trains.length,
+        stationsCount: RAILWAY_STATIONS.length,
+        activePassengers: this.railwayState.passengers.length,
+      };
+    }
+
+    if (typeof window !== 'undefined') {
+      (window as Window & { __keralaChaseState?: unknown }).__keralaChaseState = {
+        active: this.purseChase.active,
+        phase: this.purseChase.phase,
+        visualState: this.purseChase.visualState,
+        thiefX: Number(this.purseChase.thiefX.toFixed(2)),
+        thiefZ: Number(this.purseChase.thiefZ.toFixed(2)),
+        distToPlayer: Number(
+          Math.hypot(
+            this.purseChase.thiefX - this.playerX,
+            this.purseChase.thiefZ - this.playerZ,
+          ).toFixed(2),
+        ),
+        droppedItem: {
+          dropped: this.purseChase.droppedItem.dropped,
+          y: Number(this.purseChase.droppedItem.y.toFixed(2)),
+          bounces: this.purseChase.droppedItem.bounces,
+          grounded: this.purseChase.droppedItem.grounded,
+        },
+        pocketKidnappers: this.liveNpcs
+          .filter((n) => n.tag === 'pocket_kidnapper')
+          .map((n) => ({
+            id: n.id,
+            panicState: n.panicState ?? 'calm',
+            x: Number(n.x.toFixed(2)),
+            z: Number(n.z.toFixed(2)),
+            distToPlayer: Number(Math.hypot(n.x - this.playerX, n.z - this.playerZ).toFixed(2)),
+          })),
+      };
+    }
 
     this.posSaveThrottle += 0.12;
     if (this.posSaveThrottle >= 2.0) {
@@ -4068,9 +5575,9 @@ export class ThreeWorld {
       return;
     }
 
-    // Throttle expensive surface occlusion raychecks to 4 Hz (huge FPS boost!)
+    // Throttle expensive surface occlusion raychecks cleanly using device performance budget
     this.adOverlayThrottle += dt;
-    if (this.adOverlayThrottle < 0.25) return;
+    if (this.adOverlayThrottle < this.perfBudget.adSyncInterval) return;
     this.adOverlayThrottle = 0;
 
     this.camera.getWorldDirection(_v1);
@@ -4173,12 +5680,34 @@ export class ThreeWorld {
     this.elapsed += dt;
     this.frameCounter++;
 
+    // Adaptive low-lag frame-time governor (auto-steps 3D LOD detail, DPR & shadows on slower mobile GPUs!)
+    if (this.mode === 'playing' && !this.modalOpen && !this.isSoftwareGl) {
+      const perfStep = stepAdaptivePerformance(this.adaptivePerf, rawDt, false);
+      this.adaptivePerf = perfStep.state;
+      if (perfStep.changed) {
+        this.renderer.setPixelRatio(this.adaptivePerf.currentDpr);
+        if (this.renderer.shadowMap.enabled !== this.adaptivePerf.shadowsEnabled) {
+          this.renderer.shadowMap.enabled = this.adaptivePerf.shadowsEnabled;
+          this.sunLight.castShadow = this.adaptivePerf.shadowsEnabled;
+        }
+        const nextLod = updateDynamicLodScale(this.lodState, this.adaptivePerf.lodScale);
+        if (nextLod !== this.lodState) {
+          this.lodState = nextLod;
+          this.applyLodCameraAndShadows();
+          this.updateEnvironmentLod(0, true);
+        }
+      }
+    }
+
     this.updateLighting(dt);
+    this.updateRailwaySystem(dt);
     this.updatePlayerAndVehicles(dt);
     this.updateTrafficAndEmergency(dt);
+    this.updateOpenWorldPhysicsProps(dt);
     this.updateHospitalInterior(dt);
     this.updateNpcsAndAmbient(dt);
     this.updateCamera(dt);
+    this.updateEnvironmentLod(dt);
     this.update3DAdOverlays(dt);
     this.emitHudIfDue(dt);
 

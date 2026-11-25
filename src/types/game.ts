@@ -21,6 +21,8 @@ export interface WeatherHudState {
 export interface PurseChaseHudState {
   active: boolean;
   phase: 'chasing' | 'caught';
+  visualState: 'panicked_chase' | 'caught_dropped';
+  itemDropped: boolean;
   victimName: string;
   thiefX: number;
   thiefZ: number;
@@ -183,11 +185,14 @@ export interface OwnedBusinessRecord {
   revenueTickGhop: number;
 }
 
+export type NpcTag = 'pocket_kidnapper';
+
 export interface NpcDef {
   id: string;
   name: string;
   role: string;
   personality: NpcPersonality;
+  tag?: NpcTag;
   isBoss?: boolean;
   bossTitle?: string;
   homeBuildingId?: string;
@@ -468,7 +473,15 @@ export interface WorldCollectible {
 }
 
 export interface NearbyInteractable {
-  kind: 'npc' | 'building' | 'plot' | 'vehicle' | 'collectible' | 'event_spot' | 'ad_board';
+  kind:
+    | 'npc'
+    | 'building'
+    | 'plot'
+    | 'vehicle'
+    | 'collectible'
+    | 'event_spot'
+    | 'ad_board'
+    | 'beach_bench';
   id: string;
   label: string;
   sublabel: string;
@@ -513,6 +526,38 @@ export interface GameProgressState {
   timeOfDay: number; // 0..1 (0.25 = bright day, 0.72 = sunset, 0.88 = night)
 }
 
+export type TrainRiderMode = 'none' | 'driver' | 'passenger';
+export type PassengerSeatView = 'left_window' | 'right_window' | 'outside';
+
+export interface RailwayHudState {
+  // When Sheru is standing on a station platform
+  atStationId: string | null;
+  atStationName: string | null;
+  atStationCode: string | null;
+  platform: '1' | 'B' | null;
+  platformDirectionLabel: string | null;
+  stoppedTrainId: string | null;
+  stoppedTrainNumber: string | null;
+  stoppedTrainName: string | null;
+  nextTrainNumber: string | null;
+  nextTrainName: string | null;
+  nextTrainEtaSec: number | null;
+  // When Sheru is riding or driving a train
+  riderMode: TrainRiderMode;
+  trainId: string | null;
+  trainNumber: string | null;
+  trainName: string | null;
+  trainTrack: 'A' | 'B' | null;
+  trainSpeedKmh: number;
+  trainPhase: 'moving' | 'braking' | 'stopped';
+  currentStationName: string | null;
+  nextStationName: string | null;
+  nextStationDistM: number;
+  canAlight: boolean;
+  seatView: PassengerSeatView;
+  passingOppositeTrainName: string | null;
+}
+
 export interface HudSnapshot {
   playerX: number;
   playerZ: number;
@@ -530,11 +575,24 @@ export interface HudSnapshot {
   sirenActive?: boolean;
   autopilotDestName?: string | null;
   inPool?: boolean;
+  sittingOnBench?: { benchId: string; label: string } | null;
   nearby: NearbyInteractable | null;
   timePhase: TimeOfDayPhase;
   timeOfDay: number;
   weather: WeatherHudState;
   activeChase?: PurseChaseHudState | null;
+  railway?: RailwayHudState | null;
+  trains?: {
+    id: string;
+    number: string;
+    name: string;
+    x: number;
+    z: number;
+    yaw: number;
+    track: 'A' | 'B';
+    color: number;
+  }[];
+  stations?: { id: string; code: string; name: string; x: number; z: number }[];
   npcs: { id: string; x: number; z: number; isBoss?: boolean }[];
   vehicles: { id: string; x: number; z: number; isEmergency?: boolean; isAircraft?: boolean }[];
   trafficLightState?: 'ns_green' | 'ew_green' | 'yellow';

@@ -28,11 +28,66 @@ import {
 import {
   CHASE_GUN_RANGE,
   CHASE_SLAP_RANGE,
+  CHASE_TACKLE_RANGE,
   applyPurseChaseAction,
   buildPurseChaseHudState,
+  computePanickedChasePose,
+  shouldPhysicalTackleCatch,
+  spawnDroppedPurse,
   startPurseChase,
+  stepDroppedItemPhysics,
+  stepPocketKidnapperNpcPanic,
   stepPurseChase,
 } from './chaseLogic';
+import {
+  createAdaptivePerfState,
+  detectDevicePerformanceBudget,
+  stepAdaptivePerformance,
+} from './performanceLogic';
+import {
+  LOD_SCALE_STEPS,
+  classifyLodTierWithHysteresis,
+  classifyVisibleWithHysteresis,
+  computeLodDistances,
+  createDynamicLodState,
+  updateDynamicLodScale,
+} from './lodSystem';
+import {
+  MINIMAP_PREF_STORAGE_KEY,
+  formatCompactObjective,
+  getInitialMinimapVisibility,
+  readMinimapPreference,
+  toggleHudMenu,
+  toggleMinimapVisibility,
+  writeMinimapPreference,
+} from './hudPreferences';
+import {
+  WORLD_RAMPS,
+  createOpenWorldProps,
+  resolveVehiclePairCollision,
+  sampleWorldSurface,
+  stepCharacterPhysics,
+  stepRigidBodyProps,
+  stepVehicleChassisPhysics,
+} from './openWorldPhysics';
+import {
+  BEACH_BENCHES,
+  BRIDGE_DECK_Y,
+  PLATFORM_CENTER_OFFSET,
+  RAILWAY_STATIONS,
+  TRAIN_DEFS,
+  alightFromTrain,
+  boardStoppedTrain,
+  canVehicleAccessBeach,
+  createInitialRailwayState,
+  fastForwardNextTrainAtPlatform,
+  findPlayerPlatformContext,
+  isPointOnBeachZone,
+  sampleRailwayElevation,
+  sampleTrackPoint,
+  stationLocalToWorld,
+  stepRailwaySimulation,
+} from './railwayLogic';
 import {
   HOSPITAL_INTERIOR_BOUNDS,
   applyDialogueChoice,
@@ -892,9 +947,579 @@ test('Kerala Pickpocket Chase spawns thief & girl victim, runs within town bound
   assert.equal(buildPurseChaseHudState(arrest.state, 0, 0), null);
 });
 
+test('Pocket-kidnapper tagged NPCs, panicked chase visual poses, and dropped stolen purse bounce physics work accurately', () => {
+  // 1. Town world includes explicitly tagged 'pocket_kidnapper' NPCs
+  const taggedNpcs = NPCS.filter((n) => n.tag === 'pocket_kidnapper');
+  assert.ok(
+    taggedNpcs.length >= 2,
+    `Expected >= 2 NPCs tagged 'pocket_kidnapper', found ${taggedNpcs.length}`,
+  );
 
+  // 2. Panicked chase pose leans forward, shows panic alert & flails arms vs caught surrender pose
+  const panicPose = computePanickedChasePose(0.5, 'chasing', true);
+  assert.equal(panicPose.showPanicAlert, true);
+  assert.ok(panicPose.torsoPitch > 0.25, 'Panicked fleeing pose must lean forward');
+  assert.ok(panicPose.panicPulse > 0.8, 'Panic alert badge must pulse actively');
 
+  const caughtPose = computePanickedChasePose(0.5, 'caught', false);
+  assert.equal(caughtPose.showPanicAlert, false);
+  assert.ok(caughtPose.leftArmX < -2.2 && caughtPose.rightArmX < -2.2, 'Caught pose raises both hands');
 
+  // 3. Catching the thief triggers visualState 'caught_dropped' and spawns the flying dropped purse
+  let chase = startPurseChase(0, 10, 0, 7);
+  assert.equal(chase.npcTag, 'pocket_kidnapper');
+  assert.equal(chase.visualState, 'panicked_chase');
+  assert.equal(chase.droppedItem.dropped, false);
+
+  const caught = applyPurseChaseAction(chase, 'slap', chase.thiefX - 2, chase.thiefZ);
+  assert.equal(caught.caughtNow, true);
+  assert.equal(caught.state.visualState, 'caught_dropped');
+  assert.equal(caught.state.droppedItem.dropped, true);
+  assert.equal(caught.state.droppedItem.grounded, false);
+  assert.ok(caught.state.droppedItem.vy > 3, 'Dropped purse must launch upward out of hand');
+
+  const caughtHud = buildPurseChaseHudState(caught.state, chase.thiefX - 2, chase.thiefZ);
+  assert.ok(caughtHud);
+  assert.equal(caughtHud.visualState, 'caught_dropped');
+  assert.equal(caughtHud.itemDropped, true);
+
+  // 4. Stepping dropped item physics simulates parabolic arc, ground bounce, and settled rest state
+  let item = spawnDroppedPurse(0, 0, 0);
+  let sawBounce = false;
+  let peakY = item.y;
+  for (let i = 0; i < 45; i++) {
+    item = stepDroppedItemPhysics(item, 0.05);
+    if (item.y > peakY) peakY = item.y;
+    if (item.bounces >= 1) sawBounce = true;
+  }
+  assert.ok(peakY > 1.7, `Expected purse to arc upward past 1.7m, peak was ${peakY.toFixed(2)}m`);
+  assert.equal(sawBounce, true, 'Expected dropped purse to visibly bounce on the road');
+  assert.equal(item.grounded, true, 'Expected dropped purse to settle cleanly on the road');
+  assert.ok(Math.hypot(item.x, item.z) > 0.6, 'Dropped purse should land beside the thief');
+});
+
+test('All-device performance budget & adaptive frame-time governor scale cleanly for mobile, desktop, and software WebGL', () => {
+  // Low-end 4GB mobile phone auto-protects against lag
+  const lowMobile = detectDevicePerformanceBudget({
+    hardwareConcurrency: 4,
+    deviceMemory: 4,
+    viewportWidth: 390,
+    devicePixelRatio: 3,
+    isTouch: true,
+    isSoftwareGl: false,
+    requestedQuality: 'medium',
+  });
+  assert.equal(lowMobile.effectiveQuality, 'low');
+  assert.equal(lowMobile.dprCap, 1);
+  assert.equal(lowMobile.shadowsEnabled, false);
+  assert.ok(lowMobile.trafficPerRoadCap >= 2);
+
+  // High-end desktop gets crisp 1024px shadows & capped HiDPI DPR
+  const highDesktop = detectDevicePerformanceBudget({
+    hardwareConcurrency: 12,
+    deviceMemory: 16,
+    viewportWidth: 1440,
+    devicePixelRatio: 2,
+    isTouch: false,
+    isSoftwareGl: false,
+    requestedQuality: 'high',
+  });
+  assert.equal(highDesktop.effectiveQuality, 'high');
+  assert.equal(highDesktop.shadowsEnabled, true);
+  assert.equal(highDesktop.shadowMapSize, 1024);
+  assert.equal(highDesktop.dprCap, 1.75);
+
+  // Software WebGL stays deterministic and never mutates under adaptive governor
+  const softBudget = detectDevicePerformanceBudget({ isSoftwareGl: true, requestedQuality: 'medium' });
+  assert.equal(softBudget.dprCap, 1);
+  assert.equal(softBudget.shadowsEnabled, false);
+
+  let perf = createAdaptivePerfState(1.35, true);
+  const softStep = stepAdaptivePerformance(perf, 0.1, true);
+  assert.equal(softStep.changed, false);
+
+  // Sustained slow hardware frames (~20 FPS = 50ms) automatically step down DPR to eliminate lag
+  let droppedOnce = false;
+  for (let i = 0; i < 60; i++) {
+    const step = stepAdaptivePerformance(perf, 0.05, false);
+    perf = step.state;
+    if (step.changed) droppedOnce = true;
+  }
+  assert.equal(droppedOnce, true, 'Governor must step down DPR when FPS stays below 32');
+  assert.ok(perf.currentDpr < perf.baseDpr);
+
+  // Sustained smooth hardware frames (~60 FPS = 16ms) automatically restore resolution
+  const dprAfterDrop = perf.currentDpr;
+  for (let i = 0; i < 320; i++) {
+    perf = stepAdaptivePerformance(perf, 0.016, false).state;
+  }
+  assert.ok(perf.currentDpr > dprAfterDrop, 'Governor must restore DPR once smooth FPS returns');
+});
+
+test('Minimap corner toggle defaults responsively, toggles cleanly, and persists player preference', () => {
+  // Responsive defaults when no preference is stored
+  assert.equal(getInitialMinimapVisibility(1440, null), true);
+  assert.equal(getInitialMinimapVisibility(640, null), true);
+  assert.equal(getInitialMinimapVisibility(390, null), false);
+
+  // Explicit stored preferences override viewport defaults
+  assert.equal(getInitialMinimapVisibility(1440, 'false'), false);
+  assert.equal(getInitialMinimapVisibility(390, 'true'), true);
+  assert.equal(getInitialMinimapVisibility(390, 'invalid'), false);
+
+  // Toggle helper flips state cleanly
+  assert.equal(toggleMinimapVisibility(true), false);
+  assert.equal(toggleMinimapVisibility(false), true);
+
+  // Safe storage round-trip
+  const mem = new Map<string, string>();
+  const mockStorage = {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      mem.set(k, v);
+    },
+  };
+  assert.equal(readMinimapPreference(mockStorage, 1440), true);
+  writeMinimapPreference(false, mockStorage);
+  assert.equal(mem.get(MINIMAP_PREF_STORAGE_KEY), 'false');
+  assert.equal(readMinimapPreference(mockStorage, 1440), false);
+  writeMinimapPreference(true, mockStorage);
+  assert.equal(readMinimapPreference(mockStorage, 390), true);
+});
+
+test('Real open-world physics: stunt ramps are road/building-clear, character momentum & water drag work, vehicle suspension/drift/jumps & elastic impulses work, and 3D rigid-body props bounce & chain-collide', () => {
+  const colliders = getWorldColliders();
+
+  // 1. Every stunt ramp is clear of paved roads, building colliders, and player spawn, with accurate slope elevation
+  assert.equal(WORLD_RAMPS.length, 4);
+  for (const r of WORLD_RAMPS) {
+    assert.equal(
+      doesBoxOverlapAnyRoad(r.x, r.z, r.width, r.length, r.yaw, 0.2),
+      null,
+      `Ramp "${r.id}" must not overlap any paved road`,
+    );
+    assert.equal(
+      resolveCircleWorldCollision(r.x, r.z, Math.min(r.width, r.length) * 0.45, colliders).collided,
+      false,
+      `Ramp "${r.id}" must not overlap any building collider`,
+    );
+    const rFootprint = Math.hypot(r.width, r.length) * 0.5;
+    for (const plot of EMPTY_PLOTS) {
+      assert.ok(
+        Math.hypot(plot.x - r.x, plot.z - r.z) >= rFootprint + Math.hypot(plot.width, plot.depth) * 0.48,
+        `Ramp "${r.id}" must not overlap empty plot "${plot.id}"`,
+      );
+    }
+    for (const [px, pz] of TOWN_PALM_TREES) {
+      assert.ok(
+        Math.hypot(px - r.x, pz - r.z) >= rFootprint + 1.5,
+        `Ramp "${r.id}" must not overlap coconut palm at (${px}, ${pz})`,
+      );
+    }
+    const mid = sampleWorldSurface(r.x, r.z);
+    assert.equal(mid.surfaceType, 'ramp');
+    assert.equal(mid.rampId, r.id);
+    assert.ok(Math.abs(mid.groundY - r.height * 0.5) < 0.05);
+    assert.ok(mid.normalY > 0.8 && mid.normalY < 1.0);
+  }
+
+  // Surface classification: asphalt vs grass vs water
+  assert.equal(sampleWorldSurface(0, 10).surfaceType, 'asphalt');
+  assert.equal(sampleWorldSurface(RESORT_POOL_BOUNDS.centerX, RESORT_POOL_BOUNDS.centerZ).surfaceType, 'water');
+  assert.equal(sampleWorldSurface(20, 20).surfaceType, 'grass');
+
+  // 2. Character momentum physics: smooth acceleration, ramp climb, and slower top speed in water
+  let char = {
+    x: 0,
+    y: 0,
+    z: 10,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    yaw: Math.PI,
+    coyoteTimer: 0.1,
+    jumpBufferTimer: 0,
+  };
+  const firstStep = stepCharacterPhysics(char, { moveX: 0, moveZ: -1, running: true }, colliders, 0.05);
+  assert.ok(firstStep.horizontalSpeed > 2 && firstStep.horizontalSpeed < 13.4, 'Character accelerates with inertia rather than teleporting to top speed');
+  let waterChar = { ...char, x: RESORT_POOL_BOUNDS.minX + 1.0, z: RESORT_POOL_BOUNDS.centerZ };
+  for (let i = 0; i < 10; i++) {
+    waterChar = stepCharacterPhysics(waterChar, { moveX: 1, moveZ: 0, running: true }, colliders, 0.05);
+  }
+  assert.equal(sampleWorldSurface(waterChar.x, waterChar.z).surfaceType, 'water');
+  assert.ok(Math.hypot(waterChar.vx, waterChar.vz) < 9.5, 'Resort Pool water drag slows running speed');
+
+  // 3. Vehicle chassis physics: acceleration squat, braking nose-dive, drift slip, and airborne ramp jump!
+  const jRamp = WORLD_RAMPS[0]; // at (24, 6), yaw = PI/2 (ascends East +X)
+  let car = {
+    x: jRamp.x - jRamp.length * 0.5 - 8,
+    y: 0,
+    z: jRamp.z,
+    vy: 0,
+    yaw: jRamp.yaw,
+    speed: 22,
+    lateralSpeed: 0,
+    steerAngle: 0,
+    steerInput: 0,
+    maxSpeed: 42,
+    pitch: 0,
+    roll: 0,
+    pitchVel: 0,
+    rollVel: 0,
+    suspY: 0,
+    suspVy: 0,
+    grounded: true,
+  };
+
+  // Hard acceleration pitches nose up (squat); hard braking dives nose down
+  let accelCar = { ...car, x: 0, z: 10, speed: 5 };
+  for (let i = 0; i < 6; i++) {
+    accelCar = stepVehicleChassisPhysics(accelCar, { forward: 1, strafe: 0, boost: true, handbrake: false }, 0.04);
+  }
+  assert.ok(accelCar.pitch > 0.01, `Expected acceleration squat pitch > 0, got ${accelCar.pitch}`);
+
+  let brakeCar = { ...car, x: 0, z: 10, speed: 30 };
+  for (let i = 0; i < 6; i++) {
+    brakeCar = stepVehicleChassisPhysics(brakeCar, { forward: -1, strafe: 0, boost: false, handbrake: false }, 0.04);
+  }
+  assert.ok(brakeCar.pitch < -0.01, `Expected braking nose-dive pitch < 0, got ${brakeCar.pitch}`);
+
+  // Fast cornering with handbrake triggers real lateral drift & body roll
+  let driftCar = { ...car, x: 0, z: 10, speed: 26 };
+  let sawDrift = false;
+  for (let i = 0; i < 10; i++) {
+    const res = stepVehicleChassisPhysics(driftCar, { forward: 1, strafe: 1, boost: false, handbrake: true }, 0.04);
+    driftCar = res;
+    if (res.drifting) sawDrift = true;
+  }
+  assert.equal(sawDrift, true, 'Handbrake turn at speed must trigger lateral drift slip');
+  assert.ok(Math.abs(driftCar.roll) > 0.01, 'Cornering must induce chassis body roll');
+
+  // Driving fast straight up Main Junction Stunt Ramp launches airborne and lands with spring compression!
+  let launched = false;
+  let peakY = 0;
+  let landedHard = false;
+  for (let i = 0; i < 80; i++) {
+    const res = stepVehicleChassisPhysics(car, { forward: 1, strafe: 0, boost: true, handbrake: false }, 0.04);
+    car = res;
+    if (res.launchedOffRamp) launched = true;
+    if (res.y > peakY) peakY = res.y;
+    if (res.landedHard) landedHard = true;
+  }
+  assert.equal(launched, true, 'Vehicle speeding off stunt ramp lip must launch airborne');
+  assert.ok(peakY > jRamp.height + 0.4, `Expected vehicle to arc above ramp peak ${jRamp.height}m, reached ${peakY.toFixed(2)}m`);
+  assert.equal(landedHard, true, 'Landing from stunt jump must trigger spring suspension compression');
+
+  // 4. Vehicle-to-vehicle elastic momentum collision
+  const pair = resolveVehiclePairCollision(0, 0, 20, 0, 12, 2.2, 0, 0, 0, 12, 3.0, 0.4);
+  assert.equal(pair.collided, true);
+  assert.ok(pair.avx < 15 && pair.bvx > 5, 'Rear-ending a stationary vehicle transfers forward momentum cleanly');
+
+  // 5. 32 interactive 3D rigid-body street props: clear of buildings, kick/bounce/chain-collide & settle to sleep
+  const props = createOpenWorldProps();
+  assert.equal(props.length, 32);
+  for (const p of props) {
+    assert.equal(
+      resolveCircleWorldCollision(p.x, p.z, p.radius, colliders).collided,
+      false,
+      `Physics prop "${p.id}" spawned inside a building collider!`,
+    );
+  }
+
+  // Kick the Main Junction football -> wakes up, launches with upward arc & spin, bounces, and rolls to sleep
+  const ball = props[0];
+  const startX = ball.x;
+  const startZ = ball.z;
+  const impacts = stepRigidBodyProps(
+    props,
+    [{ id: 'player', x: ball.x - 0.6, y: 0, z: ball.z, vx: 11, vz: 0, radius: 0.9, mass: 5.5, kickBoost: 2.5 }],
+    colliders,
+    0.05,
+  );
+  assert.ok(impacts.length >= 1, 'Running into football must register a physical impact event');
+  assert.equal(ball.sleeping, false);
+  assert.ok(ball.vx > 5 && ball.vy > 2, 'Kicked football must launch forward and upward');
+
+  for (let i = 0; i < 160; i++) {
+    stepRigidBodyProps(props, [], colliders, 0.05);
+  }
+  assert.ok(Math.hypot(ball.x - startX, ball.z - startZ) > 3.5, 'Kicked football must travel & roll realistically');
+  assert.equal(ball.sleeping, true, 'Ball should settle cleanly to sleep once kinetic energy dissipates');
+
+  // Prop-to-prop chain reaction (bowling crate 1 into adjacent crate 2)
+  const crateA = props.find((p) => p.id === 'prop_crate_r1')!;
+  const crateB = props.find((p) => p.id === 'prop_crate_r2')!;
+  const crateBStartX = crateB.x;
+  crateA.vx = 14;
+  crateA.sleeping = false;
+  for (let i = 0; i < 20; i++) {
+    stepRigidBodyProps(props, [], colliders, 0.04);
+  }
+  assert.ok(crateB.x > crateBStartX + 0.3, 'Fast moving crate must transfer momentum into adjacent crate');
+});
+
+test('compact HUD menu toggle and single-line objective truncation keep playing screen uncluttered', () => {
+  assert.equal(toggleHudMenu(false), true);
+  assert.equal(toggleHudMenu(true), false);
+
+  assert.equal(
+    formatCompactObjective('Talk to Kuttan Nair at Kuttan Chaya Kada', 45),
+    'Talk to Kuttan Nair at Kuttan Chaya Kada',
+  );
+  const clipped = formatCompactObjective(
+    'Visit Kuttan Nair at Kuttan Chaya Kada near the main Kerala junction',
+    38,
+  );
+  assert.ok(clipped.length <= 38, `Expected <= 38 chars, got ${clipped.length}`);
+  assert.ok(clipped.endsWith('…'));
+});
+
+test('Dynamic detail scaling (LOD) tightens distances on low-end mobile, prevents boundary flicker via hysteresis, and adapts to FPS', () => {
+  // 1. Mobile low profile vs. desktop high profile
+  const mobileLow = computeLodDistances('low', 0.84, true);
+  const desktopHigh = computeLodDistances('high', 1.0, false);
+  assert.ok(mobileLow.buildingMidDist < desktopHigh.buildingMidDist);
+  assert.ok(mobileLow.palmMidDist < desktopHigh.palmMidDist);
+  assert.ok(mobileLow.propCullDist < desktopHigh.propCullDist);
+  assert.ok(mobileLow.cameraFar < desktopHigh.cameraFar);
+  assert.ok(mobileLow.shadowFrustumHalf < desktopHigh.shadowFrustumHalf);
+
+  // 2. Fog-horizon safety invariant across every tier and scale step (zero sudden pop-out in clear air!)
+  for (const quality of ['low', 'medium', 'high'] as const) {
+    for (const scale of LOD_SCALE_STEPS) {
+      const d = computeLodDistances(quality, scale, quality === 'low');
+      assert.ok(
+        d.buildingCullDist > d.fogFarCap,
+        `${quality}@${scale}: buildingCullDist (${d.buildingCullDist}) must exceed fogFarCap (${d.fogFarCap})`,
+      );
+      assert.ok(
+        d.palmCullDist > d.fogFarCap,
+        `${quality}@${scale}: palmCullDist (${d.palmCullDist}) must exceed fogFarCap (${d.fogFarCap})`,
+      );
+      assert.ok(
+        d.cameraFar > d.buildingCullDist,
+        `${quality}@${scale}: cameraFar (${d.cameraFar}) must exceed buildingCullDist (${d.buildingCullDist})`,
+      );
+    }
+  }
+
+  // 3. Hysteresis prevents flickering near LOD thresholds
+  let tier: 0 | 1 | 2 = 0;
+  // Slightly past midDist (50 + 2 = 52) stays at LOD0 until crossing midDist + hysteresis (54.5)
+  tier = classifyLodTierWithHysteresis(52 * 52, tier, 50, 120, 4.5);
+  assert.equal(tier, 0);
+  // Past 54.5 transitions to LOD1
+  tier = classifyLodTierWithHysteresis(56 * 56, tier, 50, 120, 4.5);
+  assert.equal(tier, 1);
+  // Stepping slightly back to 48 stays at LOD1 (inside hysteresis band [45.5, 54.5])
+  tier = classifyLodTierWithHysteresis(48 * 48, tier, 50, 120, 4.5);
+  assert.equal(tier, 1);
+  // Stepping clearly closer (44 < 45.5) upgrades back to LOD0
+  tier = classifyLodTierWithHysteresis(44 * 44, tier, 50, 120, 4.5);
+  assert.equal(tier, 0);
+  // Moving past cullDist + hysteresis transitions directly to LOD2
+  tier = classifyLodTierWithHysteresis(126 * 126, tier, 50, 120, 4.5);
+  assert.equal(tier, 2);
+
+  // Binary prop visibility hysteresis
+  assert.equal(classifyVisibleWithHysteresis(62 * 62, true, 60, 4), true);
+  assert.equal(classifyVisibleWithHysteresis(65 * 65, true, 60, 4), false);
+  assert.equal(classifyVisibleWithHysteresis(58 * 58, false, 60, 4), false);
+  assert.equal(classifyVisibleWithHysteresis(55 * 55, false, 60, 4), true);
+
+  // 4. Live FPS-driven dynamic LOD scale drops during lag and recovers when smooth
+  let perf = createAdaptivePerfState(1.15, true, 1.0);
+  let lod = createDynamicLodState('medium', true, perf.lodScale);
+  const initialPalmMid = lod.distances.palmMidDist;
+
+  for (let i = 0; i < 60; i++) {
+    perf = stepAdaptivePerformance(perf, 0.05, false).state;
+  }
+  assert.ok(perf.lodScale < 1.0, `Expected lodScale < 1.0 after lag, got ${perf.lodScale}`);
+  lod = updateDynamicLodScale(lod, perf.lodScale);
+  assert.ok(
+    lod.distances.palmMidDist < initialPalmMid,
+    'Tightened lodScale must reduce palm LOD transition distance',
+  );
+
+  const tightenedScale = perf.lodScale;
+  for (let i = 0; i < 320; i++) {
+    perf = stepAdaptivePerformance(perf, 0.016, false).state;
+  }
+  assert.ok(perf.lodScale > tightenedScale, 'Smooth FPS must restore dynamic lodScale');
+});
+
+test('Pocket kidnapper NPC panic state activates on purse chase, flees away from player, and drops purse with recoil & ground bounces on catch', () => {
+  // 1. Tagged pocket_kidnapper NPC stays calm when no chase is active
+  const calm = stepPocketKidnapperNpcPanic(10, -10, 0, 0, 0, false, 'idle', 1.0, 0.1, 0);
+  assert.equal(calm.panicState, 'calm');
+  assert.equal(calm.speed, 0);
+
+  // 2. When purse chase starts, pocket_kidnapper NPC enters 'panicked' state & sprints AWAY from player
+  let nx = 8;
+  let nz = -6;
+  let nyaw = 0;
+  const startDist = Math.hypot(nx - 0, nz - 0);
+  for (let i = 0; i < 15; i++) {
+    const step = stepPocketKidnapperNpcPanic(nx, nz, nyaw, 0, 0, true, 'chasing', i * 0.1, 0.1, 0);
+    assert.equal(step.panicState, 'panicked');
+    assert.ok(step.speed > 5, `Expected panicked sprint speed > 5 m/s, got ${step.speed}`);
+    nx = step.x;
+    nz = step.z;
+    nyaw = step.yaw;
+  }
+  const endDist = Math.hypot(nx - 0, nz - 0);
+  assert.ok(
+    endDist > startDist + 6,
+    `Expected panicked pocket kidnapper to flee away from player (${startDist.toFixed(1)}m -> ${endDist.toFixed(1)}m)`,
+  );
+
+  // 3. When lead thief is caught, accomplices switch to 'cowering'
+  const cower = stepPocketKidnapperNpcPanic(nx, nz, nyaw, 0, 0, true, 'caught', 2.0, 0.1, 0);
+  assert.equal(cower.panicState, 'cowering');
+
+  // 4. Physical tackle catch activates within CHASE_TACKLE_RANGE and triggers catch recoil + purse drop bounce
+  const chase = startPurseChase(0, 10, 0, 9);
+  assert.equal(shouldPhysicalTackleCatch(chase, chase.thiefX, chase.thiefZ + CHASE_TACKLE_RANGE + 2), false);
+  assert.equal(shouldPhysicalTackleCatch(chase, chase.thiefX, chase.thiefZ + 1.2), true);
+
+  const recoilPose = computePanickedChasePose(1.0, 'caught', false, 0.18);
+  const surrenderPose = computePanickedChasePose(1.0, 'caught', false, 0.8);
+  assert.ok(
+    recoilPose.torsoPitch < surrenderPose.torsoPitch - 0.15,
+    'Initial catch recoil must lean further back than settled surrender pose',
+  );
+  assert.ok(
+    recoilPose.rightArmZ < surrenderPose.rightArmZ - 0.2,
+    'Catch recoil must fling right arm outward as purse drops',
+  );
+
+  // 5. Dropped purse fires justBounced + impactSquash on ground impact and freezes landedYaw once grounded
+  let item = spawnDroppedPurse(0, 0, 0.5);
+  let sawJustBounced = false;
+  let sawSquash = false;
+  for (let i = 0; i < 60; i++) {
+    item = stepDroppedItemPhysics(item, 0.04);
+    if (item.justBounced) sawJustBounced = true;
+    if (item.impactSquash > 0.5) sawSquash = true;
+  }
+  assert.equal(sawJustBounced, true, 'Dropped purse must emit justBounced on road contact');
+  assert.equal(sawSquash, true, 'Dropped purse must trigger cartoon squash on bounce');
+  assert.equal(item.grounded, true, 'Dropped purse must settle on the ground');
+  const settledYaw = item.landedYaw;
+  const afterRest = stepDroppedItemPhysics(item, 0.1);
+  assert.equal(afterRest.landedYaw, settledYaw, 'Grounded purse must rest still instead of spinning');
+});
+
+test('Double-track Kerala Railway (4 named stations, 4 numbered/named trains, opposite PF1/PFB travel, walkable foot-overbridge, station passengers, strict station-stop exit, and Malabar Beach ground-vehicle rule)', () => {
+  // 1. 4 distinct named stations & 4 distinct numbered/named trains (2 on Track A / PF 1, 2 on Track B / PF B)
+  assert.equal(RAILWAY_STATIONS.length, 4);
+  assert.equal(new Set(RAILWAY_STATIONS.map((s) => s.name)).size, 4);
+  assert.equal(new Set(RAILWAY_STATIONS.map((s) => s.code)).size, 4);
+
+  assert.equal(TRAIN_DEFS.length, 4);
+  assert.equal(new Set(TRAIN_DEFS.map((t) => t.number)).size, 4);
+  assert.equal(new Set(TRAIN_DEFS.map((t) => t.name)).size, 4);
+  assert.equal(TRAIN_DEFS.filter((t) => t.track === 'A' && t.platform === '1').length, 2);
+  assert.equal(TRAIN_DEFS.filter((t) => t.track === 'B' && t.platform === 'B').length, 2);
+
+  // 2. Track A (PF 1, Left->Right) and Track B (PF B, Right->Left) run in strictly opposite directions at every station
+  for (const st of RAILWAY_STATIONS) {
+    const sampleA = sampleTrackPoint('A', st.stopDistA);
+    const sampleB = sampleTrackPoint('B', st.stopDistB);
+    const dot = sampleA.tx * sampleB.tx + sampleA.tz * sampleB.tz;
+    assert.ok(dot < -0.99, `Track A & Track B at ${st.name} must run strictly opposite, dot=${dot}`);
+  }
+
+  // 3. Walkable Foot-Overbridge & raised platforms exist at every station
+  for (const st of RAILWAY_STATIONS) {
+    const pf1 = stationLocalToWorld(st, -6, -PLATFORM_CENTER_OFFSET);
+    const pfB = stationLocalToWorld(st, -6, +PLATFORM_CENTER_OFFSET);
+    const bridgeMid = stationLocalToWorld(st, 0, 0);
+    assert.ok(sampleRailwayElevation(pf1.x, pf1.z) >= 0.5, `PF1 at ${st.name} must be raised`);
+    assert.ok(sampleRailwayElevation(pfB.x, pfB.z) >= 0.5, `PFB at ${st.name} must be raised`);
+    assert.ok(
+      sampleRailwayElevation(bridgeMid.x, bridgeMid.z) >= BRIDGE_DECK_Y - 0.05,
+      `Foot-overbridge at ${st.name} must span above both tracks at y=${BRIDGE_DECK_Y}`,
+    );
+  }
+
+  // 4. Waiting -> Boarding -> Alighting passengers across all 4 stations & strict stop-at-station alighting rule
+  let sim = createInitialRailwayState();
+  assert.equal(sim.passengers.length, 40, 'Expected 40 live passengers across all 4 stations');
+
+  const mlb = RAILWAY_STATIONS[0];
+  const pf1Pos = stationLocalToWorld(mlb, -4, -PLATFORM_CENTER_OFFSET);
+  sim = fastForwardNextTrainAtPlatform(sim, mlb.id, '1');
+
+  // Step until the incoming train stops smoothly at Malabar Beach Halt Platform 1
+  let sawStopped = false;
+  let sawPassengerBoardingOrAlighting = false;
+  for (let i = 0; i < 80; i++) {
+    sim = stepRailwaySimulation(sim, 0.1, 0);
+    if (sim.passengers.some((p) => p.phase === 'boarding' || p.phase === 'alighting' || p.phase === 'boarded')) {
+      sawPassengerBoardingOrAlighting = true;
+    }
+    const ctx = findPlayerPlatformContext(sim, pf1Pos.x, pf1Pos.z);
+    if (ctx?.stoppedTrain) {
+      sawStopped = true;
+      // Board as Passenger (Window Seat)
+      const boardRes = boardStoppedTrain(sim, ctx.stoppedTrain.id, 'passenger');
+      assert.equal(boardRes.success, true);
+      assert.equal(boardRes.state.riderMode, 'passenger');
+      sim = boardRes.state;
+      break;
+    }
+  }
+  assert.equal(sawStopped, true, 'Approaching train must come to a full stop at Malabar Beach Halt');
+  assert.equal(
+    sawPassengerBoardingOrAlighting,
+    true,
+    'Station passengers must visibly board/alight when a train stops',
+  );
+
+  // While stopped at station, alighting is allowed; once train departs & moves, alighting is strictly blocked!
+  for (let i = 0; i < 120; i++) {
+    sim = stepRailwaySimulation(sim, 0.1, 0);
+    const activeTrain = sim.trains.find((t) => t.id === sim.ridingTrainId);
+    if (activeTrain && activeTrain.phase === 'moving' && activeTrain.speed > 5) {
+      const midRouteExit = alightFromTrain(sim);
+      assert.equal(
+        midRouteExit.success,
+        false,
+        'Passenger MUST NOT be allowed to get off while train is moving between stations',
+      );
+      break;
+    }
+  }
+
+  // Fast-forward/advance until train stops at next station -> alighting succeeds cleanly!
+  let exitedAtNextStation = false;
+  for (let i = 0; i < 360; i++) {
+    sim = stepRailwaySimulation(sim, 0.1, 0);
+    const activeTrain = sim.trains.find((t) => t.id === sim.ridingTrainId);
+    if (activeTrain && activeTrain.phase === 'stopped') {
+      const stopExit = alightFromTrain(sim);
+      assert.equal(stopExit.success, true, 'Passenger MUST be able to get off once train stops at a station');
+      assert.equal(stopExit.state.riderMode, 'none');
+      exitedAtNextStation = true;
+      break;
+    }
+  }
+  assert.equal(exitedAtNextStation, true, 'Train must stop at the next station so passenger can alight');
+
+  // 5. Malabar Beach benches & ground-vehicle-only beach access rule (no aeroplanes on beach)
+  assert.equal(BEACH_BENCHES.length, 6);
+  for (const b of BEACH_BENCHES) {
+    assert.equal(isPointOnBeachZone(b.x, b.z), true);
+  }
+  assert.equal(canVehicleAccessBeach('lambo_sport'), true);
+  assert.equal(canVehicleAccessBeach('auto'), true);
+  assert.equal(canVehicleAccessBeach('ksrtc_bus'), true);
+  assert.equal(canVehicleAccessBeach('airplane_jet'), false);
+  assert.equal(canVehicleAccessBeach('airplane_airliner'), false);
+  assert.equal(canVehicleAccessBeach('airplane_prop'), false);
+});
 
 
 

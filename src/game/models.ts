@@ -418,15 +418,52 @@ export function applyPlayerAppearance(
 export interface NpcModelRig {
   root: THREE.Group;
   bodyGroup: THREE.Group;
+  headGroup: THREE.Group;
   leftArm: THREE.Group;
   rightArm: THREE.Group;
   leftLeg: THREE.Group;
   rightLeg: THREE.Group;
   bossHalo?: THREE.Mesh;
+  panicAlert?: THREE.Group;
+}
+
+function createPanicAlertBadge(): THREE.Group {
+  const badge = new THREE.Group();
+  const alertMat = new THREE.MeshStandardMaterial({
+    color: 0xff2a2a,
+    emissive: 0xef4444,
+    emissiveIntensity: 1.25,
+    roughness: 0.25,
+  });
+  const sweatMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    emissive: 0x0284c7,
+    emissiveIntensity: 0.8,
+    roughness: 0.2,
+  });
+
+  // Glowing red exclamation mark (!)
+  const exclBar = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.36, 0.11), alertMat);
+  exclBar.position.y = 0.22;
+  const exclDot = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), alertMat);
+  exclDot.position.y = -0.05;
+  badge.add(exclBar, exclDot);
+
+  // Flying cartoon sweat droplets on both sides
+  for (const side of [-1, 1]) {
+    const drop = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.16, 6), sweatMat);
+    drop.position.set(side * 0.26, 0.12, 0);
+    drop.rotation.z = side * -0.55;
+    badge.add(drop);
+  }
+  return badge;
 }
 
 export function createNpcModel(def: NpcDef): NpcModelRig {
   const root = new THREE.Group();
+  if (def.tag) {
+    root.userData.npcTag = def.tag;
+  }
   const s = def.scale ?? 1.0;
   root.add(createContactShadow(0.68 * s));
 
@@ -493,55 +530,70 @@ export function createNpcModel(def: NpcDef): NpcModelRig {
   const leftArm = makeArm(-1);
   const rightArm = makeArm(1);
 
+  // Articulated Head Group so panicked pocket kidnappers whip their heads looking back at Sheru!
+  const headGroup = new THREE.Group();
+  headGroup.position.set(0, 1.8, 0);
+  bodyGroup.add(headGroup);
+
   // Head
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 12), skinMat);
-  head.position.set(0, 1.8, 0);
   head.castShadow = true;
-  bodyGroup.add(head);
+  headGroup.add(head);
 
   // Hair cap
   const hair = new THREE.Mesh(
     new THREE.SphereGeometry(0.25, 10, 10, 0, Math.PI * 2, 0, Math.PI * 0.55),
     hairMat,
   );
-  hair.position.set(0, 1.83, -0.02);
-  bodyGroup.add(hair);
+  hair.position.set(0, 0.03, -0.02);
+  headGroup.add(hair);
 
-  // Eyes
+  // Eyes (wider startled eyes on pocket_kidnapper NPCs!)
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
-  for (const side of [-1, 1]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.032, 6, 6), eyeMat);
-    eye.position.set(side * 0.085, 1.83, 0.22);
-    bodyGroup.add(eye);
+  if (def.tag === 'pocket_kidnapper') {
+    const scleraMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    for (const side of [-1, 1]) {
+      const white = new THREE.Mesh(new THREE.SphereGeometry(0.048, 6, 6), scleraMat);
+      white.position.set(side * 0.085, 0.03, 0.215);
+      const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.024, 6, 6), eyeMat);
+      pupil.position.set(side * 0.085, 0.03, 0.252);
+      headGroup.add(white, pupil);
+    }
+  } else {
+    for (const side of [-1, 1]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.032, 6, 6), eyeMat);
+      eye.position.set(side * 0.085, 0.03, 0.22);
+      headGroup.add(eye);
+    }
   }
 
   // Distinct accessories
   if (def.accessory === 'mustache' || def.isBoss) {
     const stache = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.05, 0.06), hairMat);
-    stache.position.set(0, 1.73, 0.23);
-    bodyGroup.add(stache);
+    stache.position.set(0, -0.07, 0.23);
+    headGroup.add(stache);
   }
   if (def.accessory === 'sunglasses') {
     const shades = new THREE.Mesh(
       new THREE.BoxGeometry(0.32, 0.08, 0.05),
       new THREE.MeshStandardMaterial({ color: 0x0d1117, roughness: 0.1, metalness: 0.7 }),
     );
-    shades.position.set(0, 1.84, 0.24);
-    bodyGroup.add(shades);
+    shades.position.set(0, 0.04, 0.24);
+    headGroup.add(shades);
   }
   if (def.accessory === 'cap') {
     const cap = new THREE.Mesh(
       new THREE.CylinderGeometry(0.23, 0.25, 0.12, 10),
       new THREE.MeshStandardMaterial({ color: 0x1d3557, roughness: 0.5 }),
     );
-    cap.position.set(0, 2.02, 0);
-    bodyGroup.add(cap);
+    cap.position.set(0, 0.22, 0);
+    headGroup.add(cap);
     const brim = new THREE.Mesh(
       new THREE.BoxGeometry(0.28, 0.03, 0.2),
       new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.4 }),
     );
-    brim.position.set(0, 1.98, 0.16);
-    bodyGroup.add(brim);
+    brim.position.set(0, 0.18, 0.16);
+    headGroup.add(brim);
   }
   if (def.accessory === 'turban') {
     const turban = new THREE.Mesh(
@@ -549,13 +601,13 @@ export function createNpcModel(def: NpcDef): NpcModelRig {
       new THREE.MeshStandardMaterial({ color: 0xe63946, roughness: 0.7 }),
     );
     turban.rotation.x = Math.PI / 2;
-    turban.position.set(0, 2.0, 0);
-    bodyGroup.add(turban);
+    turban.position.set(0, 0.2, 0);
+    headGroup.add(turban);
   }
   if (def.accessory === 'crown') {
     const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.16, 0.18, 6), goldMat);
-    crown.position.set(0, 2.08, 0);
-    bodyGroup.add(crown);
+    crown.position.set(0, 0.28, 0);
+    headGroup.add(crown);
   }
   if (def.accessory === 'stethoscope') {
     const steth = new THREE.Mesh(
@@ -571,8 +623,8 @@ export function createNpcModel(def: NpcDef): NpcModelRig {
       new THREE.BoxGeometry(0.32, 0.14, 0.1),
       new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 }),
     );
-    cap.position.set(0, 2.06, 0.04);
-    bodyGroup.add(cap);
+    cap.position.set(0, 0.26, 0.04);
+    headGroup.add(cap);
   }
   if (def.accessory === 'hardhat' || def.accessory === 'helmet') {
     const helmet = new THREE.Mesh(
@@ -582,8 +634,8 @@ export function createNpcModel(def: NpcDef): NpcModelRig {
         roughness: 0.35,
       }),
     );
-    helmet.position.set(0, 1.9, 0);
-    bodyGroup.add(helmet);
+    helmet.position.set(0, 0.1, 0);
+    headGroup.add(helmet);
   }
   if (def.accessory === 'backpack') {
     const bag = new THREE.Mesh(
@@ -612,7 +664,15 @@ export function createNpcModel(def: NpcDef): NpcModelRig {
     bodyGroup.add(bossHalo);
   }
 
-  return { root, bodyGroup, leftArm, rightArm, leftLeg, rightLeg, bossHalo };
+  let panicAlert: THREE.Group | undefined;
+  if (def.tag === 'pocket_kidnapper') {
+    panicAlert = createPanicAlertBadge();
+    panicAlert.position.y = 2.48;
+    panicAlert.visible = false;
+    bodyGroup.add(panicAlert);
+  }
+
+  return { root, bodyGroup, headGroup, leftArm, rightArm, leftLeg, rightLeg, bossHalo, panicAlert };
 }
 
 export interface HospitalInteriorRig {
@@ -629,6 +689,75 @@ export interface BuildingMeshHandle {
   windowMats: THREE.MeshStandardMaterial[];
   def: BuildingDef;
   hospitalInterior?: HospitalInteriorRig;
+}
+
+// Shared LOD1 proxy geometries & cached materials for distant buildings (2 draw calls total per building!)
+let _lodBoxGeo: THREE.BoxGeometry | null = null;
+let _lodPyramidRoofGeo: THREE.ConeGeometry | null = null;
+const _lodWallMatCache = new Map<number, THREE.MeshLambertMaterial>();
+const _lodRoofMatCache = new Map<number, THREE.MeshLambertMaterial>();
+
+function getLodWallMaterial(color: number): THREE.MeshLambertMaterial {
+  let mat = _lodWallMatCache.get(color);
+  if (!mat) {
+    mat = new THREE.MeshLambertMaterial({ color });
+    _lodWallMatCache.set(color, mat);
+  }
+  return mat;
+}
+
+function getLodRoofMaterial(color: number): THREE.MeshLambertMaterial {
+  let mat = _lodRoofMatCache.get(color);
+  if (!mat) {
+    mat = new THREE.MeshLambertMaterial({ color });
+    _lodRoofMatCache.set(color, mat);
+  }
+  return mat;
+}
+
+/**
+ * Lightweight 2-mesh LOD1 silhouette proxy for distant Kerala buildings.
+ * Cuts per-building draw calls from ~15-35 down to 2 while preserving skyline silhouette & palette.
+ */
+export function createBuildingLodProxy(def: BuildingDef): THREE.Group {
+  if (!_lodBoxGeo) _lodBoxGeo = new THREE.BoxGeometry(1, 1, 1);
+  if (!_lodPyramidRoofGeo) {
+    _lodPyramidRoofGeo = new THREE.ConeGeometry(0.76, 1, 4);
+    _lodPyramidRoofGeo.rotateY(Math.PI / 4);
+  }
+
+  const proxy = new THREE.Group();
+  proxy.position.set(def.x, 0, def.z);
+  proxy.rotation.y = def.rotationY;
+
+  const body = new THREE.Mesh(_lodBoxGeo, getLodWallMaterial(def.wallColor));
+  body.scale.set(def.width, def.height + 0.45, def.depth);
+  body.position.y = (def.height + 0.45) * 0.5;
+  proxy.add(body);
+
+  const isFlatRoof =
+    def.category === 'hospital' ||
+    def.category === 'bank' ||
+    def.category === 'police_station' ||
+    def.category === 'fire_station' ||
+    def.category === 'mall' ||
+    def.category === 'resort';
+  const roofH = isFlatRoof ? 0.55 : Math.min(3.2, Math.max(1.8, def.width * 0.18));
+  const roof = new THREE.Mesh(
+    isFlatRoof ? _lodBoxGeo : _lodPyramidRoofGeo,
+    getLodRoofMaterial(def.roofColor),
+  );
+  if (isFlatRoof) {
+    roof.scale.set(def.width + 0.4, roofH, def.depth + 0.4);
+    roof.position.y = def.height + 0.45 + roofH * 0.5;
+  } else {
+    roof.scale.set(def.width + 1.0, roofH, def.depth + 1.0);
+    roof.position.y = def.height + 0.45 + roofH * 0.5;
+  }
+  proxy.add(roof);
+
+  proxy.visible = false;
+  return proxy;
 }
 
 function createHospitalFloorTexture(maxAnisotropy: number): THREE.CanvasTexture {
@@ -1984,16 +2113,56 @@ export function createVehicleModel(def: VehicleDef): THREE.Group {
 
 export interface CoconutPalmRig {
   root: THREE.Group;
+  highDetailGroup: THREE.Group;
+  lowDetailGroup: THREE.Group;
   swayPivot: THREE.Group;
   crown: THREE.Group;
   fronds: THREE.Group[];
   coconuts: THREE.Mesh[];
 }
 
+// Shared palm geometries & materials to eliminate redundant shader/buffer allocations across ~80+ palms
+let _palmTrunkMat: THREE.MeshStandardMaterial | null = null;
+let _palmCocoGeo: THREE.SphereGeometry | null = null;
+let _palmCocoMat: THREE.MeshStandardMaterial | null = null;
+let _palmBlade1Geo: THREE.BoxGeometry | null = null;
+let _palmBlade2Geo: THREE.BoxGeometry | null = null;
+let _palmFrondMat: THREE.MeshStandardMaterial | null = null;
+let _palmLodTrunkGeo: THREE.CylinderGeometry | null = null;
+let _palmLodTrunkMat: THREE.MeshLambertMaterial | null = null;
+let _palmLodCrownGeo: THREE.ConeGeometry | null = null;
+let _palmLodCrownMat: THREE.MeshLambertMaterial | null = null;
+
+function ensurePalmSharedAssets() {
+  if (!_palmTrunkMat) {
+    _palmTrunkMat = new THREE.MeshStandardMaterial({ color: 0x7a5738, roughness: 0.92 });
+  }
+  if (!_palmCocoGeo) _palmCocoGeo = new THREE.SphereGeometry(0.26, 8, 8);
+  if (!_palmCocoMat) {
+    _palmCocoMat = new THREE.MeshStandardMaterial({ color: 0x4b7d2c, roughness: 0.52 });
+  }
+  if (!_palmBlade1Geo) _palmBlade1Geo = new THREE.BoxGeometry(0.65, 0.06, 2.2);
+  if (!_palmBlade2Geo) _palmBlade2Geo = new THREE.BoxGeometry(0.5, 0.05, 1.9);
+  if (!_palmFrondMat) {
+    _palmFrondMat = new THREE.MeshStandardMaterial({
+      color: 0x2d7d3a,
+      roughness: 0.62,
+      side: THREE.DoubleSide,
+    });
+  }
+  if (!_palmLodTrunkGeo) _palmLodTrunkGeo = new THREE.CylinderGeometry(0.18, 0.34, 1, 5);
+  if (!_palmLodTrunkMat) _palmLodTrunkMat = new THREE.MeshLambertMaterial({ color: 0x7a5738 });
+  if (!_palmLodCrownGeo) _palmLodCrownGeo = new THREE.ConeGeometry(3.2, 1.55, 6);
+  if (!_palmLodCrownMat) _palmLodCrownMat = new THREE.MeshLambertMaterial({ color: 0x2d7d3a });
+}
+
 export function createCoconutPalmRig(height = 9.5, curveLean = 1.2): CoconutPalmRig {
+  ensurePalmSharedAssets();
   const root = new THREE.Group();
+  const highDetailGroup = new THREE.Group();
   const swayPivot = new THREE.Group();
-  root.add(swayPivot);
+  highDetailGroup.add(swayPivot);
+  root.add(highDetailGroup);
 
   const trunkCurve = new THREE.CatmullRomCurve3([
     new THREE.Vector3(0, 0, 0),
@@ -2001,8 +2170,10 @@ export function createCoconutPalmRig(height = 9.5, curveLean = 1.2): CoconutPalm
     new THREE.Vector3(curveLean * 0.85, height * 0.72, 0),
     new THREE.Vector3(curveLean, height, 0),
   ]);
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x7a5738, roughness: 0.92 });
-  const trunk = new THREE.Mesh(new THREE.TubeGeometry(trunkCurve, 8, 0.28, 7, false), trunkMat);
+  const trunk = new THREE.Mesh(
+    new THREE.TubeGeometry(trunkCurve, 8, 0.28, 7, false),
+    _palmTrunkMat!,
+  );
   trunk.castShadow = true;
   swayPivot.add(trunk);
 
@@ -2011,34 +2182,28 @@ export function createCoconutPalmRig(height = 9.5, curveLean = 1.2): CoconutPalm
   swayPivot.add(crown);
 
   // Cluster of 4 green Kerala coconuts that can visibly detach when bumped!
-  const cocoMat = new THREE.MeshStandardMaterial({ color: 0x4b7d2c, roughness: 0.52 });
   const coconuts: THREE.Mesh[] = [];
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * Math.PI * 2;
-    const coco = new THREE.Mesh(new THREE.SphereGeometry(0.26, 8, 8), cocoMat);
+    const coco = new THREE.Mesh(_palmCocoGeo!, _palmCocoMat!);
     coco.position.set(Math.cos(a) * 0.34, -0.26, Math.sin(a) * 0.34);
     crown.add(coco);
     coconuts.push(coco);
   }
 
   // 7 Arched palm fronds that rustle & flap when colliding with the tree!
-  const frondMat = new THREE.MeshStandardMaterial({
-    color: 0x2d7d3a,
-    roughness: 0.62,
-    side: THREE.DoubleSide,
-  });
   const fronds: THREE.Group[] = [];
   for (let i = 0; i < 7; i++) {
     const a = (i / 7) * Math.PI * 2;
     const frondGroup = new THREE.Group();
     frondGroup.rotation.y = a;
 
-    const blade1 = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.06, 2.2), frondMat);
+    const blade1 = new THREE.Mesh(_palmBlade1Geo!, _palmFrondMat!);
     blade1.position.set(0, 0.2, 1.1);
     blade1.rotation.x = -0.25;
     frondGroup.add(blade1);
 
-    const blade2 = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 1.9), frondMat);
+    const blade2 = new THREE.Mesh(_palmBlade2Geo!, _palmFrondMat!);
     blade2.position.set(0, -0.1, 2.95);
     blade2.rotation.x = 0.42;
     frondGroup.add(blade2);
@@ -2047,7 +2212,22 @@ export function createCoconutPalmRig(height = 9.5, curveLean = 1.2): CoconutPalm
     fronds.push(frondGroup);
   }
 
-  return { root, swayPivot, crown, fronds, coconuts };
+  // LOD1 Lightweight 2-mesh silhouette proxy (2 draw calls instead of 19!)
+  const lowDetailGroup = new THREE.Group();
+  const lodTrunk = new THREE.Mesh(_palmLodTrunkGeo!, _palmLodTrunkMat!);
+  lodTrunk.scale.set(1, height, 1);
+  lodTrunk.position.set(curveLean * 0.45, height * 0.5, 0);
+  lodTrunk.rotation.z = -Math.atan2(curveLean, height);
+  lowDetailGroup.add(lodTrunk);
+
+  const lodCrown = new THREE.Mesh(_palmLodCrownGeo!, _palmLodCrownMat!);
+  lodCrown.position.set(curveLean, height + 0.15, 0);
+  lowDetailGroup.add(lodCrown);
+
+  lowDetailGroup.visible = false;
+  root.add(lowDetailGroup);
+
+  return { root, highDetailGroup, lowDetailGroup, swayPivot, crown, fronds, coconuts };
 }
 
 export function createCoconutPalm(height = 9.5, curveLean = 1.2): THREE.Group {
@@ -2947,6 +3127,7 @@ export function createTownPedestrianModel(
   isSaree = false,
 ): TownPedestrianRig {
   const root = new THREE.Group();
+  root.add(createContactShadow(0.55));
   const shirtMat = new THREE.MeshStandardMaterial({ color: shirtColor, roughness: 0.72 });
   const lowerMat = new THREE.MeshStandardMaterial({ color: lowerColor, roughness: 0.75 });
   const skinMat = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.68 });
@@ -3005,47 +3186,59 @@ export function createTownPedestrianModel(
 export interface PickpocketThiefRig {
   root: THREE.Group;
   bodyGroup: THREE.Group;
+  headGroup: THREE.Group;
   leftLeg: THREE.Group;
   rightLeg: THREE.Group;
   leftArm: THREE.Group;
   rightArm: THREE.Group;
   stolenPurse: THREE.Group;
+  panicAlert: THREE.Group;
   dizzyStars: THREE.Group;
   beaconArrow: THREE.Mesh;
 }
 
 /**
- * Hilarious cartoon Kerala Pickpocket / Purse-Snatcher rig:
- * black/white thief outfit, bandit eye mask, bright stolen pink/gold purse,
- * overhead red chase marker arrow, and spinning cartoon dizzy stars when slapped/stunned!
+ * Hilarious cartoon Kerala Pickpocket / Purse-Snatcher rig (tagged 'pocket_kidnapper'):
+ * grounded contact shadow, sneakers, striped bandit jersey, articulated head with panicked wide eyes,
+ * clearcoat leather-sheen stolen pink/gold purse, overhead red '!' + sweat panic alert,
+ * chase marker arrow, and spinning cartoon dizzy stars when caught!
  */
 export function createPickpocketThiefModel(): PickpocketThiefRig {
   const root = new THREE.Group();
+  root.userData.npcTag = 'pocket_kidnapper';
+  root.add(createContactShadow(0.68));
+
   const bodyGroup = new THREE.Group();
   root.add(bodyGroup);
 
-  const skinMat = new THREE.MeshStandardMaterial({ color: 0xb68158, roughness: 0.72 });
-  const darkMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.7 });
-  const stripeMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.75 });
-  const redCapMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.65 });
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0xb68158, roughness: 0.7 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.68 });
+  const stripeMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.72 });
+  const redCapMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.58 });
+  const sneakerMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.45 });
+  const soleMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.7 });
 
-  const leftLeg = new THREE.Group();
-  leftLeg.position.set(-0.15, 0.74, 0);
-  const legGeo = new THREE.BoxGeometry(0.21, 0.72, 0.23);
-  const lLeg = new THREE.Mesh(legGeo, darkMat);
-  lLeg.position.y = -0.35;
-  leftLeg.add(lLeg);
-
-  const rightLeg = new THREE.Group();
-  rightLeg.position.set(0.15, 0.74, 0);
-  const rLeg = new THREE.Mesh(legGeo, darkMat);
-  rLeg.position.y = -0.35;
-  rightLeg.add(rLeg);
-  bodyGroup.add(leftLeg, rightLeg);
+  const makeThiefLeg = (xOff: number) => {
+    const leg = new THREE.Group();
+    leg.position.set(xOff, 0.74, 0);
+    const lMesh = new THREE.Mesh(new THREE.BoxGeometry(0.21, 0.64, 0.23), darkMat);
+    lMesh.position.y = -0.32;
+    lMesh.castShadow = true;
+    const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.12, 0.34), sneakerMat);
+    shoe.position.set(0, -0.68, 0.06);
+    const sole = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.04, 0.36), soleMat);
+    sole.position.set(0, -0.73, 0.06);
+    leg.add(lMesh, shoe, sole);
+    bodyGroup.add(leg);
+    return leg;
+  };
+  const leftLeg = makeThiefLeg(-0.15);
+  const rightLeg = makeThiefLeg(0.15);
 
   // Striped sneaky bandit jersey
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.68, 0.34), darkMat);
   torso.position.y = 1.08;
+  torso.castShadow = true;
   bodyGroup.add(torso);
   for (const sy of [0.88, 1.08, 1.28]) {
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.08, 0.36), stripeMat);
@@ -3058,29 +3251,41 @@ export function createPickpocketThiefModel(): PickpocketThiefRig {
   const armGeo = new THREE.BoxGeometry(0.16, 0.56, 0.16);
   const la = new THREE.Mesh(armGeo, darkMat);
   la.position.y = -0.26;
-  leftArm.add(la);
+  la.castShadow = true;
+  const laHand = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), skinMat);
+  laHand.position.y = -0.56;
+  leftArm.add(la, laHand);
 
   const rightArm = new THREE.Group();
   rightArm.position.set(0.36, 1.35, 0);
   const ra = new THREE.Mesh(armGeo, darkMat);
   ra.position.y = -0.26;
-  rightArm.add(ra);
+  ra.castShadow = true;
+  const raHand = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), skinMat);
+  raHand.position.y = -0.56;
+  rightArm.add(ra, raHand);
 
-  // Bright pink & gold stolen handbag clutched in the thief's right hand!
+  // Shiny pink & gold clearcoat leather stolen handbag clutched in the thief's right hand!
   const stolenPurse = new THREE.Group();
   stolenPurse.position.set(0.06, -0.54, 0.14);
-  const purseBody = new THREE.Mesh(
-    new THREE.BoxGeometry(0.36, 0.28, 0.18),
-    new THREE.MeshStandardMaterial({ color: 0xec4899, roughness: 0.45 }),
-  );
-  const purseClasp = new THREE.Mesh(
-    new THREE.BoxGeometry(0.12, 0.08, 0.2),
-    new THREE.MeshStandardMaterial({ color: 0xffd166, roughness: 0.25, metalness: 0.85 }),
-  );
+  const purseLeatherMat = new THREE.MeshPhysicalMaterial({
+    color: 0xec4899,
+    roughness: 0.32,
+    metalness: 0.08,
+    clearcoat: 0.65,
+    clearcoatRoughness: 0.25,
+  });
+  const purseGoldMat = new THREE.MeshStandardMaterial({
+    color: 0xffd166,
+    roughness: 0.22,
+    metalness: 0.88,
+  });
+  const purseBody = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.28, 0.19), purseLeatherMat);
+  const purseClasp = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.09, 0.21), purseGoldMat);
   purseClasp.position.y = 0.05;
   const purseStrap = new THREE.Mesh(
-    new THREE.TorusGeometry(0.11, 0.025, 6, 10, Math.PI),
-    new THREE.MeshStandardMaterial({ color: 0xfde047, roughness: 0.3, metalness: 0.7 }),
+    new THREE.TorusGeometry(0.12, 0.026, 6, 12, Math.PI),
+    purseGoldMat,
   );
   purseStrap.position.y = 0.14;
   stolenPurse.add(purseBody, purseClasp, purseStrap);
@@ -3088,17 +3293,39 @@ export function createPickpocketThiefModel(): PickpocketThiefRig {
 
   bodyGroup.add(leftArm, rightArm);
 
-  // Head + Cartoon Bandit Mask + Red Beanie
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), skinMat);
-  head.position.y = 1.64;
-  const mask = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.12, 0.26), darkMat);
-  mask.position.set(0, 1.66, 0.12);
+  // Articulated Head Group so the panicked thief whips their head left/right looking back at Sheru!
+  const headGroup = new THREE.Group();
+  headGroup.position.set(0, 1.64, 0);
+  bodyGroup.add(headGroup);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 10), skinMat);
+  head.castShadow = true;
+  const mask = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.13, 0.26), darkMat);
+  mask.position.set(0, 0.02, 0.12);
+
+  // Wide panicked cartoon white eyes + dark pupils peering through the bandit mask!
+  const scleraMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const pupilMat = new THREE.MeshBasicMaterial({ color: 0x09090b });
+  for (const side of [-1, 1]) {
+    const eyeWhite = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 6), scleraMat);
+    eyeWhite.position.set(side * 0.095, 0.03, 0.235);
+    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.026, 6, 6), pupilMat);
+    pupil.position.set(side * 0.095, 0.03, 0.278);
+    headGroup.add(eyeWhite, pupil);
+  }
+
   const beanie = new THREE.Mesh(
     new THREE.SphereGeometry(0.25, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55),
     redCapMat,
   );
-  beanie.position.y = 1.69;
-  bodyGroup.add(head, mask, beanie);
+  beanie.position.y = 0.05;
+  headGroup.add(head, mask, beanie);
+
+  // Overhead Panic Alert ('!' + blue sweat drops) visible during panicked_chase!
+  const panicAlert = createPanicAlertBadge();
+  panicAlert.position.y = 2.38;
+  panicAlert.visible = true;
+  root.add(panicAlert);
 
   // Spinning cartoon dizzy stars (visible when stunned / slapped!)
   const dizzyStars = new THREE.Group();
@@ -3128,20 +3355,183 @@ export function createPickpocketThiefModel(): PickpocketThiefRig {
     }),
   );
   beaconArrow.rotation.x = Math.PI;
-  beaconArrow.position.y = 3.1;
+  beaconArrow.position.y = 3.15;
   root.add(beaconArrow);
 
   return {
     root,
     bodyGroup,
+    headGroup,
     leftLeg,
     rightLeg,
     leftArm,
     rightArm,
     stolenPurse,
+    panicAlert,
     dizzyStars,
     beaconArrow,
   };
+}
+
+export interface DroppedPurseRig {
+  root: THREE.Group;
+  purseMesh: THREE.Group;
+  haloRing: THREE.Mesh;
+  impactRing: THREE.Mesh;
+  impactRingMat: THREE.MeshBasicMaterial;
+  shadowMesh: THREE.Mesh;
+}
+
+/**
+ * Standalone world-space 3D Dropped Stolen Purse:
+ * pops out of the pocket kidnapper's hand on catch, tumbles & bounces onto the asphalt
+ * with expanding impact shockwave ring, and shimmers with a golden ground recovery ring!
+ */
+export function createDroppedPurseModel(): DroppedPurseRig {
+  const root = new THREE.Group();
+  root.visible = false;
+
+  const shadowMesh = createContactShadow(0.48);
+  root.add(shadowMesh);
+
+  const haloRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.38, 0.56, 24),
+    new THREE.MeshBasicMaterial({
+      color: 0xfde047,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  haloRing.rotation.x = -Math.PI / 2;
+  haloRing.position.y = 0.04;
+  haloRing.visible = false;
+  root.add(haloRing);
+
+  const impactRingMat = new THREE.MeshBasicMaterial({
+    color: 0xf472b6,
+    transparent: true,
+    opacity: 0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const impactRing = new THREE.Mesh(new THREE.RingGeometry(0.28, 0.44, 24), impactRingMat);
+  impactRing.rotation.x = -Math.PI / 2;
+  impactRing.position.y = 0.05;
+  impactRing.visible = false;
+  root.add(impactRing);
+
+  const purseMesh = new THREE.Group();
+  const leatherMat = new THREE.MeshPhysicalMaterial({
+    color: 0xec4899,
+    emissive: 0x9d174d,
+    emissiveIntensity: 0.28,
+    roughness: 0.28,
+    metalness: 0.08,
+    clearcoat: 0.72,
+    clearcoatRoughness: 0.2,
+  });
+  const goldMat = new THREE.MeshStandardMaterial({
+    color: 0xffd166,
+    emissive: 0xd97706,
+    emissiveIntensity: 0.4,
+    roughness: 0.2,
+    metalness: 0.9,
+  });
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.36, 0.23), leatherMat);
+  body.castShadow = true;
+  const flap = new THREE.Mesh(new THREE.BoxGeometry(0.51, 0.14, 0.25), leatherMat);
+  flap.position.y = 0.1;
+  const clasp = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.11, 0.27), goldMat);
+  clasp.position.y = 0.04;
+  const strap = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.034, 6, 14, Math.PI), goldMat);
+  strap.position.y = 0.18;
+  purseMesh.add(body, flap, clasp, strap);
+  root.add(purseMesh);
+
+  return { root, purseMesh, haloRing, impactRing, impactRingMat, shadowMesh };
+}
+
+export interface SkyDomeRig {
+  mesh: THREE.Mesh;
+  uniforms: {
+    uTopColor: { value: THREE.Color };
+    uHorizonColor: { value: THREE.Color };
+    uBottomColor: { value: THREE.Color };
+    uSunDir: { value: THREE.Vector3 };
+    uSunColor: { value: THREE.Color };
+    uSunGlow: { value: number };
+  };
+}
+
+/**
+ * Single-draw-call realistic atmospheric Kerala sky dome:
+ * renders smooth Rayleigh-style zenith-to-horizon aerial perspective + warm glowing sun halo
+ * with zero extra textures or post-processing overhead (60 FPS friendly on all devices!).
+ */
+export function createRealisticSkyDome(): SkyDomeRig {
+  const uniforms = {
+    uTopColor: { value: new THREE.Color(0x1f6fd8) },
+    uHorizonColor: { value: new THREE.Color(0xa9dcfa) },
+    uBottomColor: { value: new THREE.Color(0x4b778d) },
+    uSunDir: { value: new THREE.Vector3(0.45, 0.7, 0.35).normalize() },
+    uSunColor: { value: new THREE.Color(0xfff4d2) },
+    uSunGlow: { value: 1.0 },
+  };
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms,
+    side: THREE.BackSide,
+    depthWrite: false,
+    depthTest: false,
+    fog: false,
+    vertexShader: /* glsl */ `
+      varying vec3 vWorldDir;
+      void main() {
+        vWorldDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uTopColor;
+      uniform vec3 uHorizonColor;
+      uniform vec3 uBottomColor;
+      uniform vec3 uSunDir;
+      uniform vec3 uSunColor;
+      uniform float uSunGlow;
+      varying vec3 vWorldDir;
+
+      void main() {
+        vec3 dir = normalize(vWorldDir);
+        float h = dir.y;
+        vec3 col;
+        if (h >= 0.0) {
+          float t = pow(clamp(h, 0.0, 1.0), 0.56);
+          col = mix(uHorizonColor, uTopColor, t);
+        } else {
+          float b = clamp(-h * 2.4, 0.0, 1.0);
+          col = mix(uHorizonColor, uBottomColor, b);
+        }
+
+        // Soft solar aureole + crisp sun disc
+        float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
+        float halo = pow(sunDot, 12.0) * 0.28 * uSunGlow;
+        float core = smoothstep(0.9965, 0.9992, sunDot) * 1.1 * uSunGlow;
+        col += uSunColor * (halo + core);
+
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  });
+
+  // Unit sphere scaled dynamically to 0.85 * camera.far and centered on camera.position every frame
+  // so the far clipping plane can NEVER carve a blue/dark circle out of the sky!
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 20), mat);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -1000;
+  return { mesh, uniforms };
 }
 
 /**

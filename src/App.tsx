@@ -142,10 +142,12 @@ export default function App() {
   const toastTimerRef = useRef<number | null>(null);
   const egoTimerRef = useRef<number | null>(null);
   const incidentRef = useRef<EmergencyIncident | null>(null);
+  const hudRef = useRef<HudSnapshot>(hud);
 
   progressRef.current = progress;
   screenRef.current = screen;
   incidentRef.current = emergencyIncident;
+  hudRef.current = hud;
 
   // Keep modalOpen false during 'ambulance_en_route' and 'transporting' so live traffic yields and ambulance visibly rushes in!
   const emergencyModalBlocking =
@@ -649,11 +651,24 @@ export default function App() {
         const nextTime = worldRef.current?.cycleTimeOfDay() ?? 0.28;
         progressRef.current = { ...progressRef.current, timeOfDay: nextTime };
       } else if (e.code === 'KeyC' && !activeDialogue && activePanel === 'none') {
+        if (hudRef.current.railway?.riderMode && hudRef.current.railway.riderMode !== 'none') {
+          return; // KeyC toggles train cab/window view inside ThreeWorld
+        }
         handleStartPurseChase();
       } else if (e.code === 'Digit1' && !activeDialogue && activePanel === 'none') {
-        handlePurseChaseAction('gun');
+        if (!hudRef.current.activeChase?.active && hudRef.current.railway?.stoppedTrainId) {
+          const res = worldRef.current?.boardTrainAtStation('driver');
+          if (res?.message) showToast(res.message);
+        } else {
+          handlePurseChaseAction('gun');
+        }
       } else if (e.code === 'Digit2' && !activeDialogue && activePanel === 'none') {
-        handlePurseChaseAction('slap');
+        if (!hudRef.current.activeChase?.active && hudRef.current.railway?.stoppedTrainId) {
+          const res = worldRef.current?.boardTrainAtStation('passenger');
+          if (res?.message) showToast(res.message);
+        } else {
+          handlePurseChaseAction('slap');
+        }
       } else if (e.code === 'Digit3' && !activeDialogue && activePanel === 'none') {
         handlePurseChaseAction('police');
       }
@@ -671,6 +686,7 @@ export default function App() {
     handleStartPurseChase,
     hasSave,
     levelCompleteNotice,
+    showToast,
     startNewGame,
     triggerManualRandomEvent,
   ]);
@@ -807,6 +823,43 @@ export default function App() {
     showToast('Welcome to Kerala International Airport (COK)! Walk to any Aeroplane & press E to fly!');
   };
 
+  const handleGoToScenicSpot = (spotId: string) => {
+    setActivePanel('none');
+    worldRef.current?.teleportToScenicSpot(spotId);
+    soundEngine.playInteract();
+    if (spotId === 'beach') {
+      showToast('Malabar Golden Beach! Walk to any sea bench & press E to sit and enjoy the Arabian Sea!');
+    } else {
+      showToast('Arrived on Platform 1! Wait for an express train or cross the Foot-Overbridge to Platform B!');
+    }
+  };
+
+  const handleBoardTrain = (mode: 'driver' | 'passenger') => {
+    const res = worldRef.current?.boardTrainAtStation(mode);
+    if (res?.message) showToast(res.message);
+  };
+
+  const handleAlightTrain = () => {
+    const res = worldRef.current?.alightCurrentTrain();
+    if (res?.message) showToast(res.message);
+  };
+
+  const handleWaitForTrain = () => {
+    const ok = worldRef.current?.waitForNextTrainAtStation();
+    if (ok) {
+      showToast('Express train approaching the platform — prepare to board!');
+    }
+  };
+
+  const handleToggleSitBench = () => {
+    const sitting = worldRef.current?.toggleSitOnBench();
+    showToast(
+      sitting
+        ? 'Relaxing on Malabar Sea Bench — enjoy the Arabian Sea waves!'
+        : 'Stood up from Malabar Sea Bench!',
+    );
+  };
+
   const handleTriggerAutoLand = () => {
     const active = worldRef.current?.triggerAutoLand() ?? false;
     showToast(
@@ -871,6 +924,14 @@ export default function App() {
           onOpenInventory={() => setActivePanel('inventory')}
           onOpenGarage={() => setActivePanel('garage')}
           onGoToAirport={handleGoToAirport}
+          onGoToScenicSpot={handleGoToScenicSpot}
+          onBoardTrain={handleBoardTrain}
+          onAlightTrain={handleAlightTrain}
+          onWaitForTrain={handleWaitForTrain}
+          onCycleTrainView={() => worldRef.current?.cycleTrainCameraView()}
+          onTrainHorn={() => worldRef.current?.soundTrainHorn()}
+          onTrainThrottle={(v) => worldRef.current?.setTrainTouchThrottle(v)}
+          onToggleSitBench={handleToggleSitBench}
           onTriggerAutoLand={handleTriggerAutoLand}
           onOpenWardrobe={() => setActivePanel('wardrobe')}
           onCallEmergency108={handleManualCall108}
