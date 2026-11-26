@@ -3,6 +3,7 @@ import {
   Armchair,
   Briefcase,
   Building2,
+  Camera,
   Car,
   Clock,
   CloudFog,
@@ -105,6 +106,7 @@ interface GameHUDProps {
   onChaseAction: (action: PurseChaseAction) => void;
   onCycleTime: () => void;
   onCycleWeather: () => void;
+  onEnterPhotoMode: () => void;
   onToggleMute: () => void;
   onPause: () => void;
   onInteractClick: () => void;
@@ -155,6 +157,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onChaseAction,
   onCycleTime,
   onCycleWeather,
+  onEnterPhotoMode,
   onToggleMute,
   onPause,
   onInteractClick,
@@ -960,6 +963,26 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   </span>
                   <span className="text-[10px] text-[#9ae6b4] tabular-nums shrink-0">
                     {hud.weather.temperatureC}°C · {hud.weather.windKmh} km/h
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="hud-enter-photo-mode"
+                  aria-label="Enter Photo Mode (Hide HUD and Freeze Camera)"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    runMenuAction(onEnterPhotoMode);
+                  }}
+                  className="col-span-2 flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-[#182c22] hover:bg-[#223d30] border border-[#ffd166]/60 text-[#ffd166] text-xs font-extrabold cursor-pointer whitespace-nowrap"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <Camera className="w-4 h-4 shrink-0" />
+                    <span className="truncate">Photo Mode [V]</span>
+                  </span>
+                  <span className="text-[10px] text-[#9ae6b4] shrink-0">
+                    Hide HUD · Snap
                   </span>
                 </button>
               </div>

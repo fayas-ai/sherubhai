@@ -79,6 +79,17 @@ import { HomeWardrobeModal } from './components/HomeWardrobeModal';
 import { GarageModal } from './components/GarageModal';
 import { EmergencyModal } from './components/EmergencyModal';
 import { AdSlot } from './components/AdSlot';
+import { PhotoModeOverlay } from './components/PhotoModeOverlay';
+import {
+  PhotoModeState,
+  canTogglePhotoMode,
+  createInitialPhotoModeState,
+  exitPhotoModeState,
+  formatSnapshotFilename,
+  recordSnapshotTaken,
+  togglePhotoModeControls,
+  togglePhotoModeState,
+} from './game/photoMode';
 
 type OverlayPanel =
   | 'none'
@@ -116,6 +127,9 @@ export default function App() {
   const [emergencyIncident, setEmergencyIncident] = useState<EmergencyIncident | null>(null);
   const [doctorResult, setDoctorResult] = useState<{ ml: string; en: string } | null>(null);
   const [activeAdBoard, setActiveAdBoard] = useState<AdBoardDef | null>(null);
+  const [photoMode, setPhotoMode] = useState<PhotoModeState>(() => createInitialPhotoModeState());
+  const [photoShutterFlash, setPhotoShutterFlash] = useState<boolean>(false);
+  const [lastSnapshotUrl, setLastSnapshotUrl] = useState<string | null>(null);
 
   const [hud, setHud] = useState<HudSnapshot>({
     playerX: PLAYER_SPAWN.x,
@@ -144,11 +158,14 @@ export default function App() {
   const egoTimerRef = useRef<number | null>(null);
   const incidentRef = useRef<EmergencyIncident | null>(null);
   const hudRef = useRef<HudSnapshot>(hud);
+  const photoModeRef = useRef<PhotoModeState>(photoMode);
+  const shutterTimerRef = useRef<number | null>(null);
 
   progressRef.current = progress;
   screenRef.current = screen;
   incidentRef.current = emergencyIncident;
   hudRef.current = hud;
+  photoModeRef.current = photoMode;
 
   // Keep modalOpen false during 'ambulance_en_route' and 'transporting' so live traffic yields and ambulance visibly rushes in!
   const emergencyModalBlocking =
@@ -243,10 +260,23 @@ export default function App() {
   useEffect(() => {
     document.body.dataset.state = screen;
     worldRef.current?.setMode(screen);
+    if (screen !== 'playing' && photoModeRef.current.active) {
+      setPhotoMode((prev) => exitPhotoModeState(prev));
+      worldRef.current?.setPhotoMode(false);
+    }
   }, [screen]);
 
   useEffect(() => {
+    document.body.dataset.photoMode = photoMode.active ? 'true' : 'false';
+    worldRef.current?.setPhotoMode(photoMode.active);
+  }, [photoMode.active]);
+
+  useEffect(() => {
     worldRef.current?.setModalOpen(anyModalOpen);
+    if (anyModalOpen && photoModeRef.current.active) {
+      setPhotoMode((prev) => exitPhotoModeState(prev));
+      worldRef.current?.setPhotoMode(false);
+    }
   }, [anyModalOpen]);
 
   useEffect(() => {
@@ -602,7 +632,46 @@ export default function App() {
     [commitProgress, showToast],
   );
 
-  // Global keyboard shortcuts (Start on Title, Pause Esc/P, Hotkeys M/L/B/K/I/R/T/G/U)
+  const handleTogglePhotoMode = useCallback(() => {
+    if (!canTogglePhotoMode(screenRef.current, modalOpenRef.current)) return;
+    setPhotoMode((prev) => {
+      const next = togglePhotoModeState(prev);
+      worldRef.current?.setPhotoMode(next.active);
+      return next;
+    });
+    soundEngine.playInteract();
+  }, []);
+
+  const handleExitPhotoMode = useCallback(() => {
+    setPhotoMode((prev) => {
+      const next = exitPhotoModeState(prev);
+      worldRef.current?.setPhotoMode(false);
+      return next;
+    });
+    soundEngine.playInteract();
+  }, []);
+
+  const handleCaptureSnapshot = useCallback(() => {
+    const dataUrl = worldRef.current?.capturePhotoSnapshot();
+    if (!dataUrl) return;
+    const filename = formatSnapshotFilename(hudRef.current.district);
+    soundEngine.playCameraShutter();
+    setPhotoShutterFlash(true);
+    if (shutterTimerRef.current) window.clearTimeout(shutterTimerRef.current);
+    shutterTimerRef.current = window.setTimeout(() => setPhotoShutterFlash(false), 180);
+    setLastSnapshotUrl(dataUrl);
+    setPhotoMode((prev) => recordSnapshotTaken(prev, filename));
+
+    // Trigger direct PNG download for the player
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }, []);
+
+  // Global keyboard shortcuts (Start on Title, Pause Esc/P, Photo Mode V, Hotkeys M/L/B/K/I/R/T/Y/G/U)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
@@ -613,6 +682,22 @@ export default function App() {
           e.preventDefault();
           if (hasSave) continueGame();
           else startNewGame();
+        }
+        return;
+      }
+
+      // Photo Mode dedicated shortcuts: V or Escape exits, Space/Enter snaps PNG, H toggles minimal bar
+      if (screenRef.current === 'playing' && photoModeRef.current.active) {
+        if (e.repeat) return;
+        if (e.code === 'KeyV' || e.code === 'Escape') {
+          e.preventDefault();
+          handleExitPhotoMode();
+        } else if (e.code === 'Space' || e.code === 'Enter') {
+          e.preventDefault();
+          handleCaptureSnapshot();
+        } else if (e.code === 'KeyH') {
+          e.preventDefault();
+          setPhotoMode((prev) => togglePhotoModeControls(prev));
         }
         return;
       }
@@ -640,6 +725,14 @@ export default function App() {
       }
 
       if (screenRef.current !== 'playing') return;
+
+      if (e.code === 'KeyV' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (canTogglePhotoMode(screenRef.current, modalOpenRef.current)) {
+          e.preventDefault();
+          handleTogglePhotoMode();
+        }
+        return;
+      }
 
       if (e.code === 'KeyM') {
         setSettings((s) => ({ ...s, muted: !s.muted }));
@@ -698,8 +791,11 @@ export default function App() {
     activePanel,
     continueGame,
     emergencyIncident,
+    handleCaptureSnapshot,
+    handleExitPhotoMode,
     handlePurseChaseAction,
     handleStartPurseChase,
+    handleTogglePhotoMode,
     hasSave,
     levelCompleteNotice,
     showToast,
@@ -925,8 +1021,8 @@ export default function App() {
         />
       )}
 
-      {/* IN-GAME HUD */}
-      {screen === 'playing' && (
+      {/* IN-GAME HUD (Hidden completely while Photo Mode [V] is active!) */}
+      {screen === 'playing' && !photoMode.active && (
         <GameHUD
           hud={hud}
           progress={progress}
@@ -971,6 +1067,7 @@ export default function App() {
               showToast(`Weather: ${cfg.label} (${cfg.mlLabel})`);
             }
           }}
+          onEnterPhotoMode={handleTogglePhotoMode}
           onToggleMute={() => setSettings((s) => ({ ...s, muted: !s.muted }))}
           onPause={() => {
             setSavedNotice(null);
@@ -991,6 +1088,21 @@ export default function App() {
           onTouchMove={(x, y, running) => worldRef.current?.setTouchInput(x, y, running)}
           onTouchFlightVertical={(dir) => worldRef.current?.setTouchFlightVertical(dir)}
           onTouchLook={(dx, dy) => worldRef.current?.rotateCameraDelta(dx, dy)}
+        />
+      )}
+
+      {/* PHOTO MODE [V] — Hides HUD, Freezes Camera & Captures Full-Resolution 3D PNG Snapshots */}
+      {screen === 'playing' && photoMode.active && (
+        <PhotoModeOverlay
+          district={hud.district}
+          controlsVisible={photoMode.controlsVisible}
+          shutterFlash={photoShutterFlash}
+          snapshotCount={photoMode.snapshotCount}
+          lastSnapshotUrl={lastSnapshotUrl}
+          lastSnapshotName={photoMode.lastSnapshotName}
+          onCaptureSnapshot={handleCaptureSnapshot}
+          onToggleControls={() => setPhotoMode((prev) => togglePhotoModeControls(prev))}
+          onExitPhotoMode={handleExitPhotoMode}
         />
       )}
 

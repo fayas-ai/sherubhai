@@ -137,6 +137,11 @@ class SoundEngine {
     this.playTone(440, 660, 0.09, 'triangle', 0.16);
   }
 
+  public playCameraShutter() {
+    this.playTone(1320, 420, 0.032, 'square', 0.12, 0);
+    this.playTone(860, 260, 0.045, 'triangle', 0.14, 0.045);
+  }
+
   public playCash() {
     this.playTone(880, 1320, 0.09, 'sine', 0.18, 0);
     this.playTone(1174, 1760, 0.14, 'triangle', 0.18, 0.08);

@@ -74,6 +74,15 @@ import {
   writeMinimapPreference,
 } from './hudPreferences';
 import {
+  canTogglePhotoMode,
+  createInitialPhotoModeState,
+  exitPhotoModeState,
+  formatSnapshotFilename,
+  recordSnapshotTaken,
+  togglePhotoModeControls,
+  togglePhotoModeState,
+} from './photoMode';
+import {
   WORLD_RAMPS,
   createOpenWorldProps,
   distanceToOBB,
@@ -1850,6 +1859,43 @@ test('Common solid-body physics blocks walking through aeroplanes (fuselage & wi
     'Aircraft exit point must stay clear of buildings',
   );
 });
+
+test('Photo Mode [V] guards active gameplay, toggles HUD/camera freeze cleanly, supports clean-frame toggle, and formats PNG snapshot filenames', () => {
+  // 1. Only allowed during active gameplay when no modal is open
+  assert.equal(canTogglePhotoMode('title', false), false);
+  assert.equal(canTogglePhotoMode('paused', false), false);
+  assert.equal(canTogglePhotoMode('playing', true), false);
+  assert.equal(canTogglePhotoMode('playing', false), true);
+
+  // 2. Toggle enters Photo Mode with controls visible, supports hiding controls [H], and records snapshots
+  let pm = createInitialPhotoModeState();
+  assert.equal(pm.active, false);
+  assert.equal(pm.snapshotCount, 0);
+
+  pm = togglePhotoModeState(pm);
+  assert.equal(pm.active, true);
+  assert.equal(pm.controlsVisible, true);
+
+  pm = togglePhotoModeControls(pm);
+  assert.equal(pm.controlsVisible, false);
+
+  const file = formatSnapshotFilename('Malabar Golden Beach', new Date(2026, 10, 25, 19, 15, 4));
+  assert.equal(file, 'kerala-sheru-malabar-golden-beach-20261125-191504.png');
+
+  pm = recordSnapshotTaken(pm, file);
+  assert.equal(pm.snapshotCount, 1);
+  assert.equal(pm.lastSnapshotName, file);
+
+  // 3. Exiting restores normal HUD while preserving snapshot count, and re-entering resets controlsVisible=true
+  pm = exitPhotoModeState(pm);
+  assert.equal(pm.active, false);
+  assert.equal(pm.snapshotCount, 1);
+
+  pm = togglePhotoModeState(pm);
+  assert.equal(pm.active, true);
+  assert.equal(pm.controlsVisible, true);
+});
+
 
 
 

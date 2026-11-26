@@ -606,6 +606,9 @@ export class ThreeWorld {
   // Runtime & Lag-Prevention Throttle state
   private mode: GameScreenState = 'title';
   private modalOpen = false;
+  private photoModeActive = false;
+  private frozenCameraPos = new THREE.Vector3();
+  private frozenCameraLook = new THREE.Vector3();
   private settings: GameSettings;
   private callbacks: ThreeWorldCallbacks;
   private timeOfDay = 0.28;
@@ -1776,6 +1779,49 @@ export class ThreeWorld {
     if (open) {
       this.keysHeld.clear();
       this.isDraggingCamera = false;
+    }
+  }
+
+  public isPhotoModeActive(): boolean {
+    return this.photoModeActive;
+  }
+
+  public setPhotoMode(active: boolean): boolean {
+    if (active === this.photoModeActive) return this.photoModeActive;
+    if (active) {
+      this.frozenCameraPos.copy(this.camera.position);
+      this.frozenCameraLook.copy(this.camLookTarget);
+      this.keysHeld.clear();
+      this.isDraggingCamera = false;
+      this.touchMoveX = 0;
+      this.touchMoveY = 0;
+      this.touchRunning = false;
+      this.touchFlightVertical = 0;
+      this.photoModeActive = true;
+      this.camera.position.copy(this.frozenCameraPos);
+      this.camera.lookAt(this.frozenCameraLook);
+      this.skyDome.mesh.position.copy(this.camera.position);
+      this.renderer.render(this.scene, this.camera);
+    } else {
+      this.photoModeActive = false;
+    }
+    this.hudThrottle = 1;
+    return this.photoModeActive;
+  }
+
+  public capturePhotoSnapshot(): string | null {
+    if (this.disposed) return null;
+    if (this.photoModeActive) {
+      this.camera.position.copy(this.frozenCameraPos);
+      this.camera.lookAt(this.frozenCameraLook);
+      this.skyDome.mesh.position.copy(this.camera.position);
+    }
+    // Synchronously render a fresh frame right before reading pixels so preserveDrawingBuffer=false never yields a blank PNG
+    this.renderer.render(this.scene, this.camera);
+    try {
+      return this.renderer.domElement.toDataURL('image/png');
+    } catch {
+      return null;
     }
   }
 
@@ -3059,18 +3105,19 @@ export class ThreeWorld {
   }
 
   public rotateCameraDelta(dx: number, dy: number) {
+    if (this.photoModeActive) return;
     const sens = 0.005 * this.settings.mobileSensitivity;
     this.camYaw -= dx * sens;
     this.camPitch = THREE.MathUtils.clamp(this.camPitch + dy * sens * 0.7, 0.08, 0.75);
   }
 
   public triggerJump() {
-    if (this.mode !== 'playing' || this.modalOpen || this.activeVehicleId) return;
+    if (this.mode !== 'playing' || this.modalOpen || this.photoModeActive || this.activeVehicleId) return;
     this.jumpBufferTimer = 0.14;
   }
 
   public triggerInteract() {
-    if (this.mode !== 'playing' || this.modalOpen) return;
+    if (this.mode !== 'playing' || this.modalOpen || this.photoModeActive) return;
 
     // 1. If riding or driving a Kerala train, E attempts to get off ONLY when stopped at a station!
     if (this.railwayState.riderMode !== 'none') {
@@ -3472,7 +3519,7 @@ export class ThreeWorld {
   };
 
   private handleKeyDown = (e: KeyboardEvent) => {
-    if (this.mode !== 'playing' || this.modalOpen) return;
+    if (this.mode !== 'playing' || this.modalOpen || this.photoModeActive) return;
     const target = e.target as HTMLElement | null;
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
 
@@ -3522,14 +3569,14 @@ export class ThreeWorld {
   };
 
   private handlePointerDown = (e: PointerEvent) => {
-    if (this.mode !== 'playing' || this.modalOpen) return;
+    if (this.mode !== 'playing' || this.modalOpen || this.photoModeActive) return;
     this.isDraggingCamera = true;
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
   };
 
   private handlePointerMove = (e: PointerEvent) => {
-    if (!this.isDraggingCamera || this.mode !== 'playing' || this.modalOpen) return;
+    if (!this.isDraggingCamera || this.mode !== 'playing' || this.modalOpen || this.photoModeActive) return;
     const dx = e.clientX - this.lastPointerX;
     const dy = e.clientY - this.lastPointerY;
     this.lastPointerX = e.clientX;
@@ -5869,6 +5916,15 @@ export class ThreeWorld {
   }
 
   private updateCamera(dt: number) {
+    if (this.photoModeActive) {
+      // Photo Mode: camera position & look target remain strictly frozen for clean snapshots
+      this.camera.position.copy(this.frozenCameraPos);
+      this.camera.lookAt(this.frozenCameraLook);
+      this.skyDome.mesh.position.copy(this.camera.position);
+      this.skyDome.mesh.scale.setScalar(Math.max(140, this.camera.far * 0.85));
+      return;
+    }
+
     if (this.mode === 'title') {
       // Heroic front 3/4 Title Showcase framing Sheru Bhai's lion face, shades & gold chains
       // on the right half while leaving calm sky & negative space on the left for the SVG title lockup!
@@ -6150,6 +6206,12 @@ export class ThreeWorld {
         trainsCount: this.railwayState.trains.length,
         stationsCount: RAILWAY_STATIONS.length,
         activePassengers: this.railwayState.passengers.length,
+        photoModeActive: this.photoModeActive,
+        cameraPos: {
+          x: Number(this.camera.position.x.toFixed(3)),
+          y: Number(this.camera.position.y.toFixed(3)),
+          z: Number(this.camera.position.z.toFixed(3)),
+        },
       };
     }
 
@@ -6408,12 +6470,14 @@ export class ThreeWorld {
     }
 
     this.updateLighting(dt);
-    this.updateRailwaySystem(dt);
-    this.updatePlayerAndVehicles(dt);
-    this.updateTrafficAndEmergency(dt);
-    this.updateOpenWorldPhysicsProps(dt);
-    this.updateHospitalInterior(dt);
-    this.updateNpcsAndAmbient(dt);
+    if (!this.photoModeActive) {
+      this.updateRailwaySystem(dt);
+      this.updatePlayerAndVehicles(dt);
+      this.updateTrafficAndEmergency(dt);
+      this.updateOpenWorldPhysicsProps(dt);
+      this.updateHospitalInterior(dt);
+      this.updateNpcsAndAmbient(dt);
+    }
     this.updateCamera(dt);
     this.updateEnvironmentLod(dt);
     this.update3DAdOverlays(dt);
