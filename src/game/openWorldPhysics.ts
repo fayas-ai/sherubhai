@@ -1153,3 +1153,498 @@ export function stepRigidBodyProps(
 
   return impacts;
 }
+
+// =============================================================================
+// COMMON SOLID-BODY PHYSICS (OBB & CIRCLE COLLISION FOR CHARACTERS & VEHICLES)
+// Prevents walking or clipping through aeroplanes (fuselage + wings), parked
+// cars/buses/autos/bikes, live AI traffic, Kerala trains, benches, and NPCs.
+// =============================================================================
+
+export interface SolidOBB {
+  cx: number;
+  cz: number;
+  /** Half-width along local X axis (perpendicular to yaw) */
+  halfW: number;
+  /** Half-length along local Z axis (forward along yaw) */
+  halfL: number;
+  yaw: number;
+  minY: number;
+  maxY: number;
+}
+
+export interface SolidCircle {
+  cx: number;
+  cz: number;
+  radius: number;
+  minY: number;
+  maxY: number;
+}
+
+export interface CircleOBBResolution {
+  x: number;
+  z: number;
+  collided: boolean;
+  nx: number;
+  nz: number;
+}
+
+export interface CharacterSolidBodyResolution {
+  x: number;
+  z: number;
+  vx: number;
+  vz: number;
+  collided: boolean;
+}
+
+/**
+ * Push exact oriented bounding box(es) matching the 3D hull of any vehicle or
+ * aeroplane into `out` (zero-GC scratch array pattern).
+ * Aeroplanes contribute TWO solid OBBs: fuselage (nose-to-tail) + main wingspan.
+ */
+export function pushVehicleSolidOBBs(
+  out: SolidOBB[],
+  type: string,
+  x: number,
+  y: number,
+  z: number,
+  yaw: number,
+): void {
+  const sinY = Math.sin(yaw);
+  const cosY = Math.cos(yaw);
+
+  if (type === 'airplane_prop') {
+    // Fuselage (nose + cabin + tail)
+    out.push({
+      cx: x - sinY * 0.1,
+      cz: z - cosY * 0.1,
+      halfW: 0.72,
+      halfL: 4.55,
+      yaw,
+      minY: y,
+      maxY: y + 3.1,
+    });
+    // Wide yellow-red main wing
+    out.push({
+      cx: x + sinY * 0.3,
+      cz: z + cosY * 0.3,
+      halfW: 4.15,
+      halfL: 0.85,
+      yaw,
+      minY: y,
+      maxY: y + 2.4,
+    });
+    return;
+  }
+
+  if (type === 'airplane_jet') {
+    // Private jet fuselage
+    out.push({
+      cx: x - sinY * 0.15,
+      cz: z - cosY * 0.15,
+      halfW: 0.85,
+      halfL: 5.8,
+      yaw,
+      minY: y,
+      maxY: y + 3.6,
+    });
+    // Swept main wings
+    out.push({
+      cx: x - sinY * 0.15,
+      cz: z - cosY * 0.15,
+      halfW: 4.65,
+      halfL: 1.05,
+      yaw,
+      minY: y,
+      maxY: y + 2.6,
+    });
+    return;
+  }
+
+  if (type === 'airplane_airliner') {
+    // Commercial 737 fuselage
+    out.push({
+      cx: x - sinY * 0.2,
+      cz: z - cosY * 0.2,
+      halfW: 1.12,
+      halfL: 7.2,
+      yaw,
+      minY: y,
+      maxY: y + 4.4,
+    });
+    // Wide commercial swept wings + twin engines
+    out.push({
+      cx: x - sinY * 0.15,
+      cz: z - cosY * 0.15,
+      halfW: 5.95,
+      halfL: 1.35,
+      yaw,
+      minY: y,
+      maxY: y + 2.9,
+    });
+    return;
+  }
+
+  // Ground vehicle chassis dimensions (matched to createDetailedVehicleModel)
+  let halfW = 0.95;
+  let halfL = 1.92;
+  let height = 2.2;
+
+  if (
+    type === 'bus' ||
+    type === 'school_bus' ||
+    type === 'private_bus' ||
+    type === 'ksrtc_bus' ||
+    type === 'tourist_bus'
+  ) {
+    halfW = 1.16;
+    halfL = 2.9;
+    height = 3.2;
+  } else if (type === 'mini_bus') {
+    halfW = 1.06;
+    halfL = 2.25;
+    height = 2.8;
+  } else if (
+    type === 'goods_truck' ||
+    type === 'garbage_truck' ||
+    type === 'tow_truck' ||
+    type === 'fire_engine' ||
+    type === 'ambulance'
+  ) {
+    halfW = 1.04;
+    halfL = 2.4;
+    height = 2.9;
+  } else if (type === 'delivery_van' || type === 'mini_truck') {
+    halfW = 0.92;
+    halfL = 1.9;
+    height = 2.4;
+  } else if (type === 'auto') {
+    halfW = 0.78;
+    halfL = 1.28;
+    height = 2.0;
+  } else if (type === 'motorcycle' || type === 'scooter' || type === 'bicycle') {
+    halfW = 0.44;
+    halfL = 0.92;
+    height = 1.4;
+  } else if (type === 'luxury_sedan') {
+    halfW = 0.95;
+    halfL = 2.26;
+    height = 1.9;
+  } else if (type === 'lambo_sport' || type === 'ferrari_sport' || type === 'supercar') {
+    halfW = 1.0;
+    halfL = 2.06;
+    height = 1.65;
+  } else if (type === 'hatchback') {
+    halfW = 0.88;
+    halfL = 1.66;
+    height = 1.9;
+  }
+
+  out.push({
+    cx: x,
+    cz: z,
+    halfW,
+    halfL,
+    yaw,
+    minY: y,
+    maxY: y + height,
+  });
+}
+
+export function getVehicleSolidOBBs(
+  type: string,
+  x: number,
+  y: number,
+  z: number,
+  yaw: number,
+): SolidOBB[] {
+  const out: SolidOBB[] = [];
+  pushVehicleSolidOBBs(out, type, x, y, z, yaw);
+  return out;
+}
+
+/**
+ * Exact shortest distance from a world XZ point to an oriented bounding box (0 if inside).
+ */
+export function distanceToOBB(px: number, pz: number, obb: SolidOBB): number {
+  const cosY = Math.cos(obb.yaw);
+  const sinY = Math.sin(obb.yaw);
+  const dx = px - obb.cx;
+  const dz = pz - obb.cz;
+  const lx = dx * cosY - dz * sinY;
+  const lz = dx * sinY + dz * cosY;
+  const clampedX = Math.max(-obb.halfW, Math.min(obb.halfW, lx));
+  const clampedZ = Math.max(-obb.halfL, Math.min(obb.halfL, lz));
+  return Math.hypot(lx - clampedX, lz - clampedZ);
+}
+
+/**
+ * Shortest exterior distance from a point to the nearest solid hull component
+ * of a vehicle or aeroplane (fuselage or wings). Used for reliable [E] prompts
+ * right outside wide wings and long fuselages.
+ */
+export function distanceToVehicleHull(
+  px: number,
+  pz: number,
+  type: string,
+  vx: number,
+  vz: number,
+  vyaw: number,
+): number {
+  const obbs = getVehicleSolidOBBs(type, vx, 0, vz, vyaw);
+  let best = Infinity;
+  for (let i = 0; i < obbs.length; i++) {
+    const d = distanceToOBB(px, pz, obbs[i]);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/**
+ * Resolve a circle (e.g. walking character or ground vehicle) against a single
+ * solid OBB. When optional previous coordinates (prevX, prevZ) are supplied and
+ * the circle center stepped inside the OBB, pushes back strictly toward the side
+ * the character came from so they can NEVER tunnel from one side to the other.
+ */
+export function resolveCircleOBBCollision(
+  x: number,
+  z: number,
+  radius: number,
+  obb: SolidOBB,
+  prevX?: number,
+  prevZ?: number,
+): CircleOBBResolution {
+  const cosY = Math.cos(obb.yaw);
+  const sinY = Math.sin(obb.yaw);
+  const dx = x - obb.cx;
+  const dz = z - obb.cz;
+
+  // Transform point into OBB local frame (+Z forward, +X right)
+  const lx = dx * cosY - dz * sinY;
+  const lz = dx * sinY + dz * cosY;
+
+  const clampedX = Math.max(-obb.halfW, Math.min(obb.halfW, lx));
+  const clampedZ = Math.max(-obb.halfL, Math.min(obb.halfL, lz));
+  const diffX = lx - clampedX;
+  const diffZ = lz - clampedZ;
+  const distSq = diffX * diffX + diffZ * diffZ;
+
+  if (distSq >= radius * radius) {
+    return { x, z, collided: false, nx: 0, nz: 0 };
+  }
+
+  let outLx = lx;
+  let outLz = lz;
+  let nlx = 0;
+  let nlz = 0;
+
+  if (distSq > 1e-8) {
+    const dist = Math.sqrt(distSq);
+    nlx = diffX / dist;
+    nlz = diffZ / dist;
+    const push = radius - dist;
+    outLx = lx + nlx * push;
+    outLz = lz + nlz * push;
+  } else {
+    // Center is inside the OBB: prefer pushing back toward the side prevX/prevZ came from
+    let usedPrevSide = false;
+    if (prevX !== undefined && prevZ !== undefined) {
+      const pdx = prevX - obb.cx;
+      const pdz = prevZ - obb.cz;
+      const plx = pdx * cosY - pdz * sinY;
+      const plz = pdx * sinY + pdz * cosY;
+      const overX = Math.abs(plx) - obb.halfW;
+      const overZ = Math.abs(plz) - obb.halfL;
+      if (overX >= 0 || overZ >= 0) {
+        usedPrevSide = true;
+        if (overX >= overZ) {
+          nlx = plx >= 0 ? 1 : -1;
+          outLx = nlx * (obb.halfW + radius);
+        } else {
+          nlz = plz >= 0 ? 1 : -1;
+          outLz = nlz * (obb.halfL + radius);
+        }
+      }
+    }
+
+    if (!usedPrevSide) {
+      const penX = obb.halfW - Math.abs(lx);
+      const penZ = obb.halfL - Math.abs(lz);
+      if (penX <= penZ) {
+        nlx = lx >= 0 ? 1 : -1;
+        outLx = nlx * (obb.halfW + radius);
+      } else {
+        nlz = lz >= 0 ? 1 : -1;
+        outLz = nlz * (obb.halfL + radius);
+      }
+    }
+  }
+
+  // Transform resolved local position and surface normal back to world XZ
+  const worldX = obb.cx + outLx * cosY + outLz * sinY;
+  const worldZ = obb.cz - outLx * sinY + outLz * cosY;
+  const worldNx = nlx * cosY + nlz * sinY;
+  const worldNz = -nlx * sinY + nlz * cosY;
+
+  return {
+    x: worldX,
+    z: worldZ,
+    collided: true,
+    nx: worldNx,
+    nz: worldNz,
+  };
+}
+
+/**
+ * Iteratively resolve a walking/jumping character cylinder against all nearby
+ * solid OBBs (aeroplanes, cars, buses, trains, benches) and solid circles
+ * (NPCs, town walkers) with vertical overlap filtering and clean wall-sliding.
+ */
+export function resolveCharacterSolidBodies(
+  x: number,
+  y: number,
+  z: number,
+  vx: number,
+  vz: number,
+  radius: number,
+  obbs: readonly SolidOBB[],
+  circles: readonly SolidCircle[],
+  prevX?: number,
+  prevZ?: number,
+  characterHeight: number = 1.85,
+  iterations: number = 3,
+): CharacterSolidBodyResolution {
+  let nx = x;
+  let nz = z;
+  let nvx = vx;
+  let nvz = vz;
+  let collided = false;
+  const charTop = y + characterHeight;
+
+  for (let iter = 0; iter < iterations; iter++) {
+    let iterHit = false;
+
+    for (let i = 0; i < obbs.length; i++) {
+      const obb = obbs[i];
+      if (y >= obb.maxY || charTop <= obb.minY) continue;
+      const res = resolveCircleOBBCollision(nx, nz, radius, obb, prevX, prevZ);
+      if (res.collided) {
+        nx = res.x;
+        nz = res.z;
+        collided = true;
+        iterHit = true;
+        const vn = nvx * res.nx + nvz * res.nz;
+        if (vn < 0) {
+          nvx -= vn * res.nx;
+          nvz -= vn * res.nz;
+        }
+      }
+    }
+
+    for (let i = 0; i < circles.length; i++) {
+      const c = circles[i];
+      if (y >= c.maxY || charTop <= c.minY) continue;
+      const dx = nx - c.cx;
+      const dz = nz - c.cz;
+      const minDist = radius + c.radius;
+      const distSq = dx * dx + dz * dz;
+      if (distSq < minDist * minDist) {
+        let dirX = 1;
+        let dirZ = 0;
+        if (distSq > 1e-8) {
+          const dist = Math.sqrt(distSq);
+          dirX = dx / dist;
+          dirZ = dz / dist;
+        } else if (prevX !== undefined && prevZ !== undefined) {
+          const pdx = prevX - c.cx;
+          const pdz = prevZ - c.cz;
+          const plen = Math.hypot(pdx, pdz);
+          if (plen > 1e-5) {
+            dirX = pdx / plen;
+            dirZ = pdz / plen;
+          }
+        }
+        nx = c.cx + dirX * minDist;
+        nz = c.cz + dirZ * minDist;
+        collided = true;
+        iterHit = true;
+        const vn = nvx * dirX + nvz * dirZ;
+        if (vn < 0) {
+          nvx -= vn * dirX;
+          nvz -= vn * dirZ;
+        }
+      }
+    }
+
+    if (!iterHit) break;
+  }
+
+  return { x: nx, z: nz, vx: nvx, vz: nvz, collided };
+}
+
+/**
+ * Compute a guaranteed non-clipping exit point outside a vehicle or aeroplane's
+ * solid hull (wingtip/side/rear candidates), clamped cleanly clear of buildings.
+ */
+export function findSafeVehicleExitPoint(
+  type: string,
+  vx: number,
+  vy: number,
+  vz: number,
+  vyaw: number,
+  isAircraft: boolean,
+  colliders: AABB[],
+  charRadius: number = 0.72,
+): { x: number; z: number } {
+  const obbs = getVehicleSolidOBBs(type, vx, vy, vz, vyaw);
+  const cosY = Math.cos(vyaw);
+  const sinY = Math.sin(vyaw);
+  const sideDist = isAircraft ? (type === 'airplane_airliner' ? 7.2 : 5.8) : 2.55;
+  const rearDist = isAircraft ? (type === 'airplane_airliner' ? 8.6 : 6.8) : 3.8;
+
+  const candidates = [
+    // Right side (+local X)
+    { x: vx + cosY * sideDist, z: vz - sinY * sideDist },
+    // Left side (-local X)
+    { x: vx - cosY * sideDist, z: vz + sinY * sideDist },
+    // Behind tail (-local Z)
+    { x: vx - sinY * rearDist, z: vz - cosY * rearDist },
+    // Ahead of nose (+local Z)
+    { x: vx + sinY * rearDist, z: vz + cosY * rearDist },
+  ];
+
+  for (const cand of candidates) {
+    const worldSafe = resolveCircleWorldCollision(cand.x, cand.z, charRadius, colliders);
+    const hullSafe = resolveCharacterSolidBodies(
+      worldSafe.x,
+      vy,
+      worldSafe.z,
+      0,
+      0,
+      charRadius,
+      obbs,
+      [],
+      cand.x,
+      cand.z,
+    );
+    const finalCheck = resolveCircleWorldCollision(hullSafe.x, hullSafe.z, charRadius, colliders);
+    if (!finalCheck.collided) {
+      return { x: hullSafe.x, z: hullSafe.z };
+    }
+  }
+
+  const fallback = resolveCircleWorldCollision(candidates[0].x, candidates[0].z, charRadius, colliders);
+  const pushed = resolveCharacterSolidBodies(
+    fallback.x,
+    vy,
+    fallback.z,
+    0,
+    0,
+    charRadius,
+    obbs,
+    [],
+    candidates[0].x,
+    candidates[0].z,
+  );
+  return { x: pushed.x, z: pushed.z };
+}
+

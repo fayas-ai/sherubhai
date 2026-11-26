@@ -361,6 +361,40 @@ class SoundEngine {
       // Ignore if audio unavailable
     }
   }
+
+  public playThunderSoft() {
+    // Distant low Kerala monsoon thunder rumble (filtered brown-ish noise + sub-bass swell)
+    if (this.settings.muted || this.settings.sfxVolume <= 0.02) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    try {
+      const sr = ctx.sampleRate;
+      const len = Math.floor(sr * 1.9);
+      const buf = ctx.createBuffer(1, len, sr);
+      const d = buf.getChannelData(0);
+      let last = 0;
+      for (let i = 0; i < len; i++) {
+        const white = Math.random() * 2 - 1;
+        last = (last + 0.04 * white) / 1.04;
+        const t = i / len;
+        const env = Math.sin(Math.min(1, t * 3.5) * Math.PI * 0.5) * Math.pow(1 - t, 1.35);
+        d[i] = last * 3.4 * env;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(165, ctx.currentTime);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(Math.max(0.01, this.settings.sfxVolume * 0.24), ctx.currentTime);
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      src.start();
+    } catch {
+      // Ignore if audio unavailable
+    }
+  }
 }
 
 export const soundEngine = new SoundEngine();

@@ -6,18 +6,18 @@ export function createRoadTexture(maxAnisotropy: number): THREE.CanvasTexture {
   canvas.height = 512;
   const ctx = canvas.getContext('2d')!;
 
-  // Realistic sun-baked tropical tarmac base with subtle transverse crown shading
+  // Realistic sun-weathered Kerala basalt tarmac with subtle crown shading
   const baseGrad = ctx.createLinearGradient(0, 0, 512, 0);
-  baseGrad.addColorStop(0, '#2a2f36');
-  baseGrad.addColorStop(0.18, '#343a43');
-  baseGrad.addColorStop(0.5, '#3a414b');
-  baseGrad.addColorStop(0.82, '#343a43');
-  baseGrad.addColorStop(1, '#2a2f36');
+  baseGrad.addColorStop(0, '#292c31');
+  baseGrad.addColorStop(0.18, '#32363c');
+  baseGrad.addColorStop(0.5, '#383d44');
+  baseGrad.addColorStop(0.82, '#32363c');
+  baseGrad.addColorStop(1, '#292c31');
   ctx.fillStyle = baseGrad;
   ctx.fillRect(0, 0, 512, 512);
 
   // Subtle realistic wheel-track polish strips along left & right lanes
-  ctx.fillStyle = 'rgba(20, 23, 28, 0.22)';
+  ctx.fillStyle = 'rgba(18, 20, 24, 0.24)';
   ctx.fillRect(92, 0, 44, 512);
   ctx.fillRect(178, 0, 44, 512);
   ctx.fillRect(290, 0, 44, 512);
@@ -32,23 +32,23 @@ export function createRoadTexture(maxAnisotropy: number): THREE.CanvasTexture {
   for (let i = 0; i < 6500; i++) {
     const x = nextRand() * 512;
     const y = nextRand() * 512;
-    const v = 38 + Math.floor(nextRand() * 34);
-    ctx.fillStyle = `rgb(${v},${v + 2},${v + 5})`;
+    const v = 36 + Math.floor(nextRand() * 32);
+    ctx.fillStyle = `rgb(${v},${v + 1},${v + 3})`;
     ctx.fillRect(x, y, 2, 2);
   }
 
-  // Concrete kerb shoulder edge strips
-  ctx.fillStyle = '#5c636b';
+  // Sun-weathered warm concrete kerb shoulder strips
+  ctx.fillStyle = '#686b6a';
   ctx.fillRect(0, 0, 14, 512);
   ctx.fillRect(498, 0, 14, 512);
 
-  // Crisp weathered side white lines
-  ctx.fillStyle = '#ebe6d8';
+  // Naturally weathered off-white road edge lines
+  ctx.fillStyle = '#dfd9cd';
   ctx.fillRect(20, 0, 10, 512);
   ctx.fillRect(482, 0, 10, 512);
 
-  // Realistic Kerala highway center yellow dashed divider with subtle wear
-  ctx.fillStyle = '#f2be35';
+  // Realistic Kerala highway center ochre-gold dashed divider
+  ctx.fillStyle = '#d8a735';
   for (let y = 16; y < 512; y += 96) {
     ctx.fillRect(250, y, 12, 54);
   }
@@ -67,11 +67,11 @@ export function createGrassTexture(maxAnisotropy: number): THREE.CanvasTexture {
   canvas.height = 512;
   const ctx = canvas.getContext('2d')!;
 
-  // Rich sunlit Kerala tropical lawn base
-  ctx.fillStyle = '#477f3d';
+  // Natural lush Kerala monsoon-fed olive-emerald turf (avoids neon lime cast)
+  ctx.fillStyle = '#3d6634';
   ctx.fillRect(0, 0, 512, 512);
 
-  // Soft dappled chlorophyll & sunlit turf patches for realistic organic variation
+  // Soft organic sunlit olive & deep tropical shade meadow patches
   let seed = 4242;
   const nextRand = () => {
     seed = (seed * 1664525 + 1013904223) >>> 0;
@@ -80,27 +80,28 @@ export function createGrassTexture(maxAnisotropy: number): THREE.CanvasTexture {
   for (let i = 0; i < 160; i++) {
     const x = nextRand() * 512;
     const y = nextRand() * 512;
-    const r = 14 + nextRand() * 32;
+    const r = 16 + nextRand() * 36;
     ctx.fillStyle =
-      i % 2 === 0 ? 'rgba(92, 152, 68, 0.22)' : 'rgba(42, 88, 38, 0.22)';
+      i % 2 === 0 ? 'rgba(84, 120, 60, 0.24)' : 'rgba(38, 72, 34, 0.24)';
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Fine blade strokes
+  // Fine natural tropical grass blade texture
   for (let i = 0; i < 5500; i++) {
     const x = nextRand() * 512;
     const y = nextRand() * 512;
-    const g = 104 + Math.floor(nextRand() * 56);
-    const r = 54 + Math.floor(nextRand() * 34);
-    ctx.fillStyle = `rgb(${r},${g},48)`;
+    const g = 88 + Math.floor(nextRand() * 44);
+    const r = 52 + Math.floor(nextRand() * 32);
+    const b = 38 + Math.floor(nextRand() * 18);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(x, y, 2, 5);
   }
 
-  // Warm Kerala red laterite soil speckles
+  // Subtle Kerala red laterite earth flecks peeking through turf
   for (let i = 0; i < 240; i++) {
-    ctx.fillStyle = 'rgba(148, 82, 48, 0.22)';
+    ctx.fillStyle = 'rgba(130, 77, 49, 0.20)';
     ctx.beginPath();
     ctx.arc(nextRand() * 512, nextRand() * 512, 3 + nextRand() * 7, 0, Math.PI * 2);
     ctx.fill();
@@ -137,7 +138,12 @@ export function createPlasterBumpTexture(maxAnisotropy: number): THREE.CanvasTex
   return tex;
 }
 
+const _roofTileTexCache = new Map<number, THREE.CanvasTexture>();
+
 export function createRoofTileTexture(baseHex: number, maxAnisotropy: number): THREE.CanvasTexture {
+  const cached = _roofTileTexCache.get(baseHex);
+  if (cached) return cached;
+
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -147,7 +153,24 @@ export function createRoofTileTexture(baseHex: number, maxAnisotropy: number): T
   ctx.fillStyle = `#${color.getHexString()}`;
   ctx.fillRect(0, 0, 256, 256);
 
-  // Mangalore Kerala terracotta roof ridges
+  // Subtle kiln-baked clay tonal variation per Mangalore roof tile
+  let seed = (baseHex ^ 0x5a3c) >>> 0;
+  const nextRand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  for (let y = 0; y < 256; y += 32) {
+    for (let x = 0; x < 256; x += 24) {
+      const shade = (nextRand() - 0.5) * 0.16;
+      ctx.fillStyle =
+        shade >= 0
+          ? `rgba(255, 232, 200, ${shade.toFixed(3)})`
+          : `rgba(18, 10, 6, ${(-shade).toFixed(3)})`;
+      ctx.fillRect(x, y, 24, 32);
+    }
+  }
+
+  // Mangalore Kerala terracotta roof ridges & overlap shadows
   ctx.strokeStyle = 'rgba(20, 10, 8, 0.28)';
   ctx.lineWidth = 3;
   for (let x = 0; x < 256; x += 24) {
@@ -156,7 +179,7 @@ export function createRoofTileTexture(baseHex: number, maxAnisotropy: number): T
     ctx.lineTo(x, 256);
     ctx.stroke();
   }
-  ctx.strokeStyle = 'rgba(255, 230, 190, 0.16)';
+  ctx.strokeStyle = 'rgba(255, 230, 190, 0.14)';
   ctx.lineWidth = 2;
   for (let y = 0; y < 256; y += 32) {
     ctx.beginPath();
@@ -171,6 +194,7 @@ export function createRoofTileTexture(baseHex: number, maxAnisotropy: number): T
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(3, 2);
   tex.anisotropy = maxAnisotropy;
+  _roofTileTexCache.set(baseHex, tex);
   return tex;
 }
 
@@ -318,8 +342,8 @@ export function createRunwayTexture(maxAnisotropy: number): THREE.CanvasTexture 
   canvas.height = 256;
   const ctx = canvas.getContext('2d')!;
 
-  // Deep fresh aviation asphalt
-  ctx.fillStyle = '#252b33';
+  // Realistic weathered aviation asphalt
+  ctx.fillStyle = '#282c31';
   ctx.fillRect(0, 0, 2048, 256);
 
   // Subtle weathered grain & centerline tire touchdown rubber streaks
@@ -333,8 +357,8 @@ export function createRunwayTexture(maxAnisotropy: number): THREE.CanvasTexture 
   ctx.fillRect(260, 96, 360, 64);
   ctx.fillRect(1428, 96, 360, 64);
 
-  // Solid crisp white runway edge lines
-  ctx.fillStyle = '#f8fafc';
+  // Natural off-white painted runway edge lines
+  ctx.fillStyle = '#e5e7eb';
   ctx.fillRect(16, 12, 2016, 7);
   ctx.fillRect(16, 237, 2016, 7);
 
@@ -348,7 +372,7 @@ export function createRunwayTexture(maxAnisotropy: number): THREE.CanvasTexture 
 
   // Runway designator numbers ("09" left, "27" right)
   ctx.save();
-  ctx.fillStyle = '#f8fafc';
+  ctx.fillStyle = '#e5e7eb';
   ctx.font = '900 58px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -390,7 +414,7 @@ export function createRunwayTexture(maxAnisotropy: number): THREE.CanvasTexture 
 }
 
 /**
- * Airport Apron & Taxiway concrete tarmac texture with crisp yellow aircraft guide lines.
+ * Airport Apron & Taxiway concrete tarmac texture with weathered ochre aircraft guide lines.
  */
 export function createApronTexture(maxAnisotropy: number): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
@@ -398,11 +422,11 @@ export function createApronTexture(maxAnisotropy: number): THREE.CanvasTexture {
   canvas.height = 256;
   const ctx = canvas.getContext('2d')!;
 
-  ctx.fillStyle = '#525b66';
+  ctx.fillStyle = '#5c6064';
   ctx.fillRect(0, 0, 512, 256);
 
   // Subtle concrete slab seams
-  ctx.strokeStyle = 'rgba(28,34,42,0.28)';
+  ctx.strokeStyle = 'rgba(28,32,36,0.28)';
   ctx.lineWidth = 2;
   for (let x = 0; x <= 512; x += 64) {
     ctx.beginPath();
@@ -417,8 +441,8 @@ export function createApronTexture(maxAnisotropy: number): THREE.CanvasTexture {
     ctx.stroke();
   }
 
-  // Yellow horizontal taxiway lead-in line & gate T-bars
-  ctx.fillStyle = '#facc15';
+  // Weathered aviation yellow taxiway lead-in line & gate T-bars
+  ctx.fillStyle = '#dbb233';
   ctx.fillRect(16, 124, 480, 8);
   for (const gx of [128, 256, 384]) {
     ctx.fillRect(gx - 3, 44, 6, 84);
@@ -430,5 +454,74 @@ export function createApronTexture(maxAnisotropy: number): THREE.CanvasTexture {
   tex.anisotropy = maxAnisotropy;
   return tex;
 }
+
+let _streetPuddleTexCache: THREE.CanvasTexture | null = null;
+
+/**
+ * Procedural irregular organic street rainwater puddle texture (cached once).
+ * Features feathered wet rim, murky monsoon-asphalt depth gradient, and subtle specular sheen.
+ */
+export function createStreetPuddleTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  if (_streetPuddleTexCache) return _streetPuddleTexCache;
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const cx = size / 2;
+  const cy = size / 2;
+
+  ctx.clearRect(0, 0, size, size);
+
+  // Build an organic multi-lobe puddle silhouette
+  ctx.save();
+  ctx.beginPath();
+  const steps = 64;
+  for (let i = 0; i <= steps; i++) {
+    const a = (i / steps) * Math.PI * 2;
+    const lobe =
+      1 +
+      0.13 * Math.sin(a * 2 + 0.6) +
+      0.09 * Math.cos(a * 3 - 0.8) +
+      0.05 * Math.sin(a * 5 + 1.4);
+    const r = (size * 0.38) * lobe;
+    const px = cx + Math.cos(a) * r;
+    const py = cy + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+
+  // Soft dark wet asphalt halo ring around puddle edge
+  ctx.shadowColor = 'rgba(10, 15, 22, 0.78)';
+  ctx.shadowBlur = 18;
+  const grad = ctx.createRadialGradient(cx - 10, cy - 8, 6, cx, cy, size * 0.44);
+  grad.addColorStop(0, 'rgba(64, 92, 118, 0.86)');
+  grad.addColorStop(0.58, 'rgba(42, 64, 86, 0.78)');
+  grad.addColorStop(0.84, 'rgba(24, 36, 48, 0.56)');
+  grad.addColorStop(1, 'rgba(18, 26, 34, 0.0)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.restore();
+
+  // Subtle realistic overcast sky reflection glint (soft, never milky white)
+  ctx.save();
+  const sheen = ctx.createLinearGradient(cx - 52, cy - 44, cx + 52, cy + 44);
+  sheen.addColorStop(0, 'rgba(168, 198, 222, 0.22)');
+  sheen.addColorStop(0.5, 'rgba(120, 150, 178, 0.07)');
+  sheen.addColorStop(1, 'rgba(176, 206, 230, 0.14)');
+  ctx.fillStyle = sheen;
+  ctx.beginPath();
+  ctx.ellipse(cx - 4, cy - 5, size * 0.22, size * 0.14, -0.35, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  _streetPuddleTexCache = tex;
+  return tex;
+}
+
 
 

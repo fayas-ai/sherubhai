@@ -4,7 +4,7 @@ export type GraphicsQuality = 'low' | 'medium' | 'high';
 
 export type TimeOfDayPhase = 'day' | 'sunset' | 'night';
 
-export type WeatherCondition = 'sunny' | 'rain' | 'mist';
+export type WeatherCondition = 'sunny' | 'rain' | 'monsoon' | 'mist';
 
 export interface WeatherHudState {
   condition: WeatherCondition;
@@ -13,9 +13,12 @@ export interface WeatherHudState {
   cycleProgress: number; // 0..1 progress until next dynamic weather shift
   intensity: number; // 0..1 fade-in strength
   label: string;
+  shortLabel: string;
   mlLabel: string;
   temperatureC: number;
   windKmh: number;
+  rainDensity: number;
+  puddleFrequency: number;
 }
 
 export interface PurseChaseHudState {
@@ -556,6 +559,7 @@ export interface RailwayHudState {
   canAlight: boolean;
   seatView: PassengerSeatView;
   passingOppositeTrainName: string | null;
+  obstacleStoppedLabel?: string | null;
 }
 
 export interface HudSnapshot {

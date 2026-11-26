@@ -5,6 +5,9 @@ import {
   Building2,
   Car,
   Clock,
+  CloudFog,
+  CloudLightning,
+  CloudRain,
   Compass,
   Crosshair,
   Eye,
@@ -101,6 +104,7 @@ interface GameHUDProps {
   onStartPurseChase: () => void;
   onChaseAction: (action: PurseChaseAction) => void;
   onCycleTime: () => void;
+  onCycleWeather: () => void;
   onToggleMute: () => void;
   onPause: () => void;
   onInteractClick: () => void;
@@ -150,6 +154,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onStartPurseChase,
   onChaseAction,
   onCycleTime,
+  onCycleWeather,
   onToggleMute,
   onPause,
   onInteractClick,
@@ -284,8 +289,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
     // Roads (Main Cross + Outer Ring Boulevards matching TOWN_ROADS)
     ctx.fillStyle = '#474f57';
-    // mainRoadNS runs cleanly straight north into the Airport Apron & south to Malabar Beach
-    ctx.fillRect(cx - 3, cy - 126 * scale, 6, 300 * scale);
+    // mainRoadNS + West/East Malabar Beach Access Roads (clear of MLB station!) + Beachfront Parking Blvd
+    ctx.fillRect(cx - 3, cy - 126 * scale, 6, 234 * scale);
+    ctx.fillRect(cx - 46 * scale - 2, cy + 104 * scale, 4, 62 * scale);
+    ctx.fillRect(cx + 46 * scale - 2, cy + 104 * scale, 4, 62 * scale);
+    ctx.fillRect(cx - 56 * scale, cy + 165.5 * scale - 2.5, 112 * scale, 5);
     ctx.fillRect(0, cy - 4 * scale - 3, w, 6);
     ctx.fillRect(0, cy - 32 * scale - 2, w, 4);
     ctx.fillRect(0, cy + 34 * scale - 2, w, 4);
@@ -619,6 +627,34 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 ·
               </span>
               <span className="text-[#d4a12a] font-bold truncate">{roleBadge}</span>
+              <span aria-hidden="true" className="text-[#d4a12a]/70">
+                ·
+              </span>
+              <span
+                data-testid="hud-weather-badge"
+                data-weather={hud.weather.condition}
+                className={`inline-flex items-center gap-1 font-bold shrink-0 ${
+                  hud.weather.condition === 'monsoon'
+                    ? 'text-[#7dd3fc]'
+                    : hud.weather.condition === 'rain'
+                      ? 'text-[#bae6fd]'
+                      : hud.weather.condition === 'mist'
+                        ? 'text-[#cbd5e1]'
+                        : 'text-[#fde68a]'
+                }`}
+                title={`${hud.weather.label} (${hud.weather.mlLabel}) · ${hud.weather.temperatureC}°C · Wind ${hud.weather.windKmh} km/h`}
+              >
+                {hud.weather.condition === 'monsoon' ? (
+                  <CloudLightning className="w-3 h-3 shrink-0" />
+                ) : hud.weather.condition === 'rain' ? (
+                  <CloudRain className="w-3 h-3 shrink-0" />
+                ) : hud.weather.condition === 'mist' ? (
+                  <CloudFog className="w-3 h-3 shrink-0" />
+                ) : (
+                  <Sun className="w-3 h-3 shrink-0" />
+                )}
+                <span>{hud.weather.shortLabel}</span>
+              </span>
             </div>
           </div>
 
@@ -890,6 +926,40 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   )}
                   <span className="truncate capitalize">
                     Time: {hud.timePhase} [T]
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="hud-cycle-weather"
+                  aria-label="Cycle Weather: Sunny, Rain, Monsoon, and Mist"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    onCycleWeather();
+                  }}
+                  className={`col-span-2 flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border text-xs font-bold cursor-pointer whitespace-nowrap ${
+                    hud.weather.condition === 'monsoon'
+                      ? 'bg-[#173042] hover:bg-[#1e3f57] border-[#38bdf8]/75 text-[#e0f2fe]'
+                      : 'bg-[#182c22] hover:bg-[#223d30] border-[#d4a12a]/45 text-[#cfe8dc]'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    {hud.weather.condition === 'monsoon' ? (
+                      <CloudLightning className="w-4 h-4 text-[#7dd3fc] shrink-0" />
+                    ) : hud.weather.condition === 'rain' ? (
+                      <CloudRain className="w-4 h-4 text-[#93c5fd] shrink-0" />
+                    ) : hud.weather.condition === 'mist' ? (
+                      <CloudFog className="w-4 h-4 text-[#cbd5e1] shrink-0" />
+                    ) : (
+                      <Sun className="w-4 h-4 text-[#fde047] shrink-0" />
+                    )}
+                    <span className="truncate">
+                      {hud.weather.label} [Y]
+                    </span>
+                  </span>
+                  <span className="text-[10px] text-[#9ae6b4] tabular-nums shrink-0">
+                    {hud.weather.temperatureC}°C · {hud.weather.windKmh} km/h
                   </span>
                 </button>
               </div>
@@ -1377,6 +1447,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               data-testid="train-hud"
               className="pointer-events-auto w-full sm:w-auto flex flex-col gap-1.5 px-3.5 py-2.5 rounded-xl bg-[#101c2c]/95 border-2 border-[#facc15] shadow-[0_8px_28px_rgba(0,0,0,0.72)] max-w-[94vw] sm:min-w-[430px]"
             >
+              {hud.railway.obstacleStoppedLabel && (
+                <div
+                  data-testid="train-obstacle-alert"
+                  className="px-2.5 py-1 rounded-lg bg-[#991b1b] border border-[#fde047] text-[#fef08a] text-[10px] sm:text-xs font-extrabold text-center tracking-wide animate-pulse"
+                >
+                  ⚠ EMERGENCY STOP · TRACK BLOCKED BY {hud.railway.obstacleStoppedLabel.toUpperCase()}
+                </div>
+              )}
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider text-[#fde047]">

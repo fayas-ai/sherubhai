@@ -9,7 +9,9 @@ import {
   RAILWAY_STATIONS,
   RailwayStationDef,
   TrainDef,
+  WESTERN_GHATS_RANGES,
   getTrackLength,
+  sampleMountainElevation,
   sampleTrackPoint,
   stationLocalToWorld,
 } from './railwayLogic';
@@ -24,6 +26,7 @@ export interface ArabianSeaRig {
     uNightFactor: { value: number };
   };
   boats: { mesh: THREE.Group; baseX: number; baseZ: number; phase: number }[];
+  seagulls: { mesh: THREE.Group; leftWing: THREE.Mesh; rightWing: THREE.Mesh; cx: number; cz: number; radius: number; height: number; speed: number; phase: number }[];
 }
 
 export interface KeralaTrainRig {
@@ -70,32 +73,84 @@ function createRailwaySignTexture(
 }
 
 /**
+ * Procedural sunlit bright golden-ivory Kerala beach sand texture (warm cream-gold dunes,
+ * soft wind-rippled grain & tiny shell glints — never dull brown!).
+ */
+function createGoldenBeachSandTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+
+  // Natural sunlit Malabar golden-ochre beach sand (warm golden dunes -> damp shoreline, never chalky white or muddy brown)
+  const grad = ctx.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0.0, '#e8cfa0'); // Warm sunlit dry Malabar sand
+  grad.addColorStop(0.55, '#d9ba84'); // Golden coastal mid-beach sand
+  grad.addColorStop(0.84, '#c39e66'); // Damp golden-ochre shore sand
+  grad.addColorStop(1.0, '#967547'); // Wet shoreline sand glistening under surf
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 512, 512);
+
+  // Soft wind-sculpted golden sand ripples
+  for (let y = 0; y < 512; y += 14) {
+    ctx.strokeStyle = y < 380 ? 'rgba(255, 245, 222, 0.20)' : 'rgba(255, 238, 205, 0.12)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let x = 0; x <= 512; x += 32) {
+      const wy = y + Math.sin(x * 0.03 + y * 0.05) * 3.5;
+      if (x === 0) ctx.moveTo(x, wy);
+      else ctx.lineTo(x, wy);
+    }
+    ctx.stroke();
+  }
+
+  // Fine mineral quartz sand grain & subtle shell flecks (deterministic)
+  for (let i = 0; i < 2400; i++) {
+    const sx = ((i * 197) % 512);
+    const sy = ((i * 353 + (i >> 3) * 19) % 512);
+    ctx.fillStyle =
+      i % 7 === 0
+        ? 'rgba(252, 244, 224, 0.44)'
+        : i % 3 === 0
+          ? 'rgba(182, 146, 94, 0.28)'
+          : 'rgba(228, 202, 152, 0.30)';
+    ctx.fillRect(sx, sy, i % 11 === 0 ? 2 : 1.5, i % 11 === 0 ? 2 : 1.5);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.repeat.set(6, 1);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
  * Real sculpted multi-ridge Western Ghats Mountain Range surrounding the North, East & West horizons
- * while leaving the Airport Runway 09/27 approach corridor (z = -170..-118) and South Arabian Sea open!
- * Uses vertex-colored displaced ridge geometry for ultra-low draw calls (1 mesh per range = 60 FPS!).
+ * using the EXACT shared `WESTERN_GHATS_RANGES` + `sampleMountainElevation` heightfield so
+ * aeroplane mountain collision matches the 3D terrain 1:1!
  */
 export function createWesternGhatsMountains(): THREE.Group {
   const group = new THREE.Group();
+  const mountainMat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.94,
+    metalness: 0.02,
+    flatShading: false,
+  });
 
-  const buildRidgeRange = (
-    peaks: { x: number; z: number; rx: number; rz: number; h: number }[],
-    minX: number,
-    maxX: number,
-    minZ: number,
-    maxZ: number,
-    segX: number,
-    segZ: number,
-  ) => {
-    const width = maxX - minX;
-    const depth = maxZ - minZ;
-    const geo = new THREE.PlaneGeometry(width, depth, segX, segZ);
+  for (const range of WESTERN_GHATS_RANGES) {
+    const width = range.maxX - range.minX;
+    const depth = range.maxZ - range.minZ;
+    const geo = new THREE.PlaneGeometry(width, depth, range.segX, range.segZ);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position as THREE.BufferAttribute;
     const colors = new Float32Array(pos.count * 3);
     const col = new THREE.Color();
 
-    const cx = (minX + maxX) * 0.5;
-    const cz = (minZ + maxZ) * 0.5;
+    const cx = (range.minX + range.maxX) * 0.5;
+    const cz = (range.minZ + range.maxZ) * 0.5;
 
     for (let i = 0; i < pos.count; i++) {
       const lx = pos.getX(i);
@@ -103,43 +158,20 @@ export function createWesternGhatsMountains(): THREE.Group {
       const wx = cx + lx;
       const wz = cz + lz;
 
-      // Sum overlapping ridged mountain peaks + procedural craggy fold noise
-      let h = 0;
-      for (const p of peaks) {
-        const dx = (wx - p.x) / p.rx;
-        const dz = (wz - p.z) / p.rz;
-        const d2 = dx * dx + dz * dz;
-        if (d2 < 1.35) {
-          const falloff = Math.max(0, 1 - Math.sqrt(d2) / 1.16);
-          const ridged = falloff * falloff * (1.28 - 0.28 * falloff);
-          h = Math.max(h, p.h * ridged);
-        }
-      }
-
-      if (h > 0.6) {
-        const crag =
-          Math.sin(wx * 0.055 + wz * 0.042) * 3.8 +
-          Math.cos(wx * 0.11 - wz * 0.095) * 2.1 +
-          Math.sin((wx - wz) * 0.032) * 4.2;
-        h = Math.max(0, h + crag * Math.min(1, h / 22));
-      }
-
-      // Sink edges cleanly below ground so there's zero floating skirt seam
-      const edgeFadeX = Math.min(1, (width * 0.5 - Math.abs(lx)) / 18);
-      const edgeFadeZ = Math.min(1, (depth * 0.5 - Math.abs(lz)) / 18);
-      const finalY = h * Math.max(0, Math.min(edgeFadeX, edgeFadeZ)) - 0.6;
+      const finalY = sampleMountainElevation(wx, wz);
       pos.setY(i, finalY);
 
-      // Authentic Western Ghats altitude shading: lush jungle base -> mossy slope -> basalt cliff -> misty summit
-      const normH = Math.max(0, Math.min(1, finalY / 72));
-      if (normH < 0.28) {
-        col.setRGB(0.14 + normH * 0.25, 0.34 + normH * 0.22, 0.15 + normH * 0.12);
-      } else if (normH < 0.62) {
-        const t = (normH - 0.28) / 0.34;
-        col.setRGB(0.21 + t * 0.17, 0.4 + t * 0.06, 0.19 + t * 0.14);
+      // Realistic Western Ghats elevation palette: deep shola forest -> olive-moss ridge -> Deccan basalt -> sunlit misty summit
+      const normH = Math.max(0, Math.min(1, finalY / 74));
+      if (normH < 0.30) {
+        const t = normH / 0.30;
+        col.setRGB(0.13 + t * 0.09, 0.25 + t * 0.09, 0.14 + t * 0.05);
+      } else if (normH < 0.64) {
+        const t = (normH - 0.30) / 0.34;
+        col.setRGB(0.22 + t * 0.14, 0.34 + t * 0.04, 0.19 + t * 0.17);
       } else {
-        const t = (normH - 0.62) / 0.38;
-        col.setRGB(0.38 + t * 0.22, 0.46 + t * 0.18, 0.33 + t * 0.29);
+        const t = (normH - 0.64) / 0.36;
+        col.setRGB(0.36 + t * 0.16, 0.38 + t * 0.20, 0.36 + t * 0.27);
       }
       colors[i * 3] = col.r;
       colors[i * 3 + 1] = col.g;
@@ -148,148 +180,88 @@ export function createWesternGhatsMountains(): THREE.Group {
 
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
-    const mat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.94,
-      metalness: 0.02,
-      flatShading: true,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
+    const mesh = new THREE.Mesh(geo, mountainMat);
     mesh.position.set(cx, 0, cz);
-    return mesh;
-  };
-
-  // 1. Grand Northern Western Ghats (Sahyadri) towering behind Kerala International Airport & North Track
-  group.add(
-    buildRidgeRange(
-      [
-        { x: -245, z: -265, rx: 95, rz: 70, h: 66 },
-        { x: -135, z: -275, rx: 105, rz: 74, h: 86 },
-        { x: -20, z: -290, rx: 115, rz: 78, h: 98 },
-        { x: 95, z: -278, rx: 105, rz: 72, h: 82 },
-        { x: 215, z: -262, rx: 100, rz: 70, h: 74 },
-        { x: -75, z: -242, rx: 68, rz: 44, h: 42 },
-        { x: 65, z: -240, rx: 72, rz: 44, h: 46 },
-      ],
-      -340,
-      340,
-      -370,
-      -205,
-      46,
-      18,
-    ),
-  );
-
-  // 2. Eastern Ghats Mountain Chain (overlooking Ghats View Jn., keeping Runway 09/27 east approach z=-170..-118 clear!)
-  group.add(
-    buildRidgeRange(
-      [
-        { x: 270, z: -60, rx: 78, rz: 75, h: 78 },
-        { x: 285, z: 25, rx: 86, rz: 82, h: 92 },
-        { x: 268, z: 105, rx: 76, rz: 72, h: 64 },
-        { x: 235, z: -12, rx: 48, rz: 54, h: 40 },
-        { x: 238, z: 62, rx: 50, rz: 54, h: 44 },
-      ],
-      194,
-      365,
-      -116,
-      172,
-      18,
-      32,
-    ),
-  );
-
-  // 3. Western Coastal Headland Hills (overlooking Kochi Central Jn., sloping down toward the Arabian Sea)
-  group.add(
-    buildRidgeRange(
-      [
-        { x: -270, z: -55, rx: 76, rz: 75, h: 68 },
-        { x: -282, z: 28, rx: 82, rz: 78, h: 76 },
-        { x: -262, z: 102, rx: 72, rz: 66, h: 52 },
-        { x: -234, z: -8, rx: 46, rz: 50, h: 34 },
-      ],
-      -365,
-      -194,
-      -116,
-      166,
-      18,
-      30,
-    ),
-  );
+    group.add(mesh);
+  }
 
   return group;
 }
 
 /**
- * Real Arabian Sea + Malabar Golden Sandy Beach Promenade + 6 Sit-able Coastal Benches +
- * Swaying Coastal Coconut Palms + Bobbing Kerala Fishing Vallams!
+ * Real Vibrant Arabian Sea + Sunlit Golden-Ochre Malabar Beach Promenade + 6 Sit-able Coastal Benches +
+ * Coastal Umbrellas + Lifeguard Tower + Swaying Coconut Palms + Bobbing Kerala Fishing Boats + Seagulls!
  */
 export function createArabianSeaAndBeach(): ArabianSeaRig {
   const group = new THREE.Group();
 
-  // 1. Golden Kerala Sandy Beach sloping gently into the Arabian Sea
-  const sandGeo = new THREE.PlaneGeometry(420, 68, 24, 8);
+  // 1. Sunlit Golden-Ochre Kerala Sandy Beach sloping smoothly into the Arabian Sea (z = 160..234)
+  const sandGeo = new THREE.PlaneGeometry(540, 74, 32, 12);
   sandGeo.rotateX(-Math.PI / 2);
   const sPos = sandGeo.attributes.position as THREE.BufferAttribute;
   for (let i = 0; i < sPos.count; i++) {
-    const lz = sPos.getZ(i); // -34 (z=146) .. +34 (z=214)
-    const wz = 180 + lz;
-    let y = 0.04;
-    if (wz > 184) {
-      y = 0.04 - ((wz - 184) / 30) * 1.1; // slopes underwater smoothly!
+    const lx = sPos.getX(i);
+    const lz = sPos.getZ(i); // -37 (z=160) .. +37 (z=234)
+    const wz = 197 + lz;
+    let y = 0.08;
+    if (wz <= 187.5) {
+      // Sunlit golden beach berm cleanly above y=0
+      y = 0.08 + Math.sin(lx * 0.045) * 0.05;
+    } else {
+      // Smooth underwater seabed slope beneath the emerald-blue Arabian Sea
+      y = 0.08 - ((wz - 187.5) / 36) * 1.45;
     }
     sPos.setY(i, y);
   }
   sandGeo.computeVertexNormals();
+  const sandTex = createGoldenBeachSandTexture();
   const sandMat = new THREE.MeshStandardMaterial({
-    color: 0xe6c88a,
-    roughness: 0.94,
+    map: sandTex,
+    color: 0xf6ead4,
+    roughness: 0.93,
     metalness: 0.02,
   });
   const sandMesh = new THREE.Mesh(sandGeo, sandMat);
-  sandMesh.position.set(0, 0, 180);
+  sandMesh.position.set(0, 0, 197);
   sandMesh.receiveShadow = true;
   group.add(sandMesh);
 
-  // 2. Beach Access Road connecting Main Junction Avenue (z=108) across Railway Level Crossing (z=134) straight to Beach Parking (z=170)!
-  const accessRoadMat = new THREE.MeshStandardMaterial({
-    color: 0x383e46,
-    roughness: 0.85,
-  });
-  const accessRoad = new THREE.Mesh(new THREE.PlaneGeometry(11, 64), accessRoadMat);
-  accessRoad.rotation.x = -Math.PI / 2;
-  accessRoad.position.set(0, 0.055, 140);
-  accessRoad.receiveShadow = true;
-  group.add(accessRoad);
-
-  // Beachfront Vehicle Parking & Boardwalk Promenade (ground vehicles can park right beside the sea!)
+  // 2. Clean Limestone & Teak Beachfront Boardwalk Promenade (right beside the paved Beachfront Parking Blvd!)
   const promenade = new THREE.Mesh(
-    new THREE.BoxGeometry(92, 0.14, 7.2),
-    new THREE.MeshStandardMaterial({ color: 0xc8a97e, roughness: 0.88 }),
+    new THREE.BoxGeometry(96, 0.18, 6.4),
+    new THREE.MeshStandardMaterial({ color: 0xded2bc, roughness: 0.84 }),
   );
-  promenade.position.set(0, 0.07, BEACH_ZONE.boardwalkZ);
+  promenade.position.set(0, 0.09, BEACH_ZONE.boardwalkZ);
   promenade.receiveShadow = true;
   group.add(promenade);
 
-  // Decorative wooden boardwalk planks & Kerala beach welcome arch
+  // Decorative coastal wooden handrail border along promenade
+  const railMat = new THREE.MeshStandardMaterial({ color: 0x8d5524, roughness: 0.7 });
+  for (const segX of [-30, 30]) {
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(34, 0.1, 0.14), railMat);
+    rail.position.set(segX, 0.95, BEACH_ZONE.boardwalkZ - 3.1);
+    group.add(rail);
+  }
+
+  // Kerala Beach Welcome Arch at Beachfront Parking entrance (cleanly behind promenade so sea view is 100% open!)
   const archPostMat = new THREE.MeshStandardMaterial({ color: 0x7c2d12, roughness: 0.72 });
-  for (const sx of [-6.4, 6.4]) {
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.3, 4.8, 8), archPostMat);
-    post.position.set(sx, 2.4, 165);
+  for (const sx of [-6.8, 6.8]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 5.2, 8), archPostMat);
+    post.position.set(sx, 2.6, 161.2);
     group.add(post);
   }
   const beachSignTex = createRailwaySignTexture(
     'MALABAR GOLDEN BEACH',
-    'മലബാർ ബീച്ച് · WALK OR DRIVE (NO PLANES)',
-    '#0ea5e9',
+    'മലബാർ ബീച്ച് · PARK ON ROAD · WALK TO SEA BENCHES',
+    '#0284c7',
     '#ffffff',
     '#fde047',
   );
   const archSign = new THREE.Mesh(
-    new THREE.BoxGeometry(13.6, 1.5, 0.35),
-    new THREE.MeshStandardMaterial({ map: beachSignTex, roughness: 0.45 }),
+    new THREE.BoxGeometry(14.4, 1.5, 0.32),
+    new THREE.MeshStandardMaterial({ map: beachSignTex, roughness: 0.4 }),
   );
-  archSign.position.set(0, 4.9, 165);
+  archSign.position.set(0, 5.4, 161.2);
   group.add(archSign);
 
   // 3. Six Sit-able Wooden Beach Benches facing the Arabian Sea!
@@ -297,7 +269,7 @@ export function createArabianSeaAndBeach(): ArabianSeaRig {
   const ironMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.45, metalness: 0.65 });
   for (const b of BEACH_BENCHES) {
     const bench = new THREE.Group();
-    bench.position.set(b.x, 0.14, b.z);
+    bench.position.set(b.x, 0.16, b.z);
     bench.rotation.y = b.facingYaw;
 
     const seat = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.14, 0.68), woodMat);
@@ -319,33 +291,84 @@ export function createArabianSeaAndBeach(): ArabianSeaRig {
     group.add(bench);
   }
 
+  // 3b. Sun-bleached Malabar Coastal Umbrellas, Linen Mats & Lifeguard Watchtower (shared geometries for zero-lag!)
+  const umbrellaSpots: { x: number; z: number; c1: number; c2: number }[] = [
+    { x: -42, z: 182, c1: 0xc94a38, c2: 0xefe3cb },
+    { x: -25, z: 183, c1: 0x2b6f91, c2: 0xf4eee2 },
+    { x: -13, z: 183, c1: 0xd47d2a, c2: 0xf3e7cc },
+    { x: 13, z: 183, c1: 0x2d7a5e, c2: 0xf4eee2 },
+    { x: 25, z: 183, c1: 0xb33b54, c2: 0xefe1be },
+    { x: 42, z: 182, c1: 0x4d5b8c, c2: 0xefe3cb },
+  ];
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0xd4d8dc, metalness: 0.35, roughness: 0.48 });
+  const poleGeo = new THREE.CylinderGeometry(0.05, 0.05, 2.7, 6);
+  const canopyGeo = new THREE.ConeGeometry(2.05, 0.72, 8);
+  const beachMatGeo = new THREE.BoxGeometry(2.1, 0.04, 1.2);
+  const beachMatFabric = new THREE.MeshStandardMaterial({ color: 0xf1e7d2, roughness: 0.88 });
+  for (const u of umbrellaSpots) {
+    const pole = new THREE.Mesh(poleGeo, poleMat);
+    pole.position.set(u.x, 1.35, u.z);
+    const canopy = new THREE.Mesh(
+      canopyGeo,
+      new THREE.MeshStandardMaterial({ color: u.c1, roughness: 0.74 }),
+    );
+    canopy.position.set(u.x, 2.72, u.z);
+    const mat = new THREE.Mesh(beachMatGeo, beachMatFabric);
+    mat.position.set(u.x + 0.3, 0.06, u.z + 0.5);
+    group.add(pole, canopy, mat);
+  }
+
+  // Painted Coastal Lifeguard Watchtower on the East sand flank
+  const tower = new THREE.Group();
+  tower.position.set(52, 0.06, 181);
+  const towerWood = new THREE.MeshStandardMaterial({ color: 0xeae5da, roughness: 0.74 });
+  const towerRed = new THREE.MeshStandardMaterial({ color: 0xb8362e, roughness: 0.65 });
+  const towerLegGeo = new THREE.BoxGeometry(0.18, 3.2, 0.18);
+  for (const sx of [-1.2, 1.2]) {
+    for (const sz of [-1.2, 1.2]) {
+      const leg = new THREE.Mesh(towerLegGeo, towerWood);
+      leg.position.set(sx, 1.6, sz);
+      tower.add(leg);
+    }
+  }
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.18, 3.0), towerWood);
+  deck.position.y = 3.2;
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.8, 2.4), towerRed);
+  cabin.position.y = 4.15;
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(2.3, 0.9, 4), towerWood);
+  roof.rotation.y = Math.PI / 4;
+  roof.position.y = 5.45;
+  tower.add(deck, cabin, roof);
+  group.add(tower);
+
   // 4. Swaying Coastal Coconut Palms framing Malabar Beach
   const beachPalmCoords: [number, number][] = [
-    [-58, 178],
-    [-46, 181],
-    [-27, 179],
-    [-14, 180],
-    [14, 180],
-    [27, 179],
-    [46, 181],
-    [58, 178],
-    [-78, 174],
-    [78, 174],
+    [-64, 178],
+    [-49, 179],
+    [-31, 178],
+    [-16, 179],
+    [16, 179],
+    [31, 178],
+    [49, 179],
+    [64, 178],
+    [-82, 174],
+    [82, 174],
   ];
   beachPalmCoords.forEach(([px, pz], idx) => {
     const rig = createCoconutPalmRig(9.5 + (idx % 3) * 1.4, 1.25);
     rig.root.position.set(px, 0.04, pz);
     rig.root.rotation.y = idx * 1.1;
     // Lean gently seaward like classic Kerala shoreline palms!
-    rig.root.rotation.x = 0.08 + (idx % 2) * 0.05;
+    rig.root.rotation.x = 0.1 + (idx % 2) * 0.05;
     group.add(rig.root);
   });
 
-  // 5. Real Animated Arabian Sea with rolling waves, turquoise shallows & white surf foam!
+  // 5. Realistic Animated Multi-Wave Arabian Sea:
+  // Natural sunlit coastal emerald-teal shallows -> rich Arabian sea blue -> Fresnel sky reflection -> breaking white surf!
   const seaUniforms = {
     uTime: { value: 0 },
-    uSunColor: { value: new THREE.Color(0xfff5d6) },
-    uSkyHorizon: { value: new THREE.Color(0xa9dcfa) },
+    uSunColor: { value: new THREE.Color(0xfff3de) },
+    uSkyHorizon: { value: new THREE.Color(0xc2dcf0) },
     uNightFactor: { value: 0 },
   };
   const seaMat = new THREE.ShaderMaterial({
@@ -355,13 +378,17 @@ export function createArabianSeaAndBeach(): ArabianSeaRig {
       uniform float uTime;
       varying vec3 vWorldPos;
       varying float vWave;
+      varying float vSlope;
       void main() {
         vec4 worldPos = modelMatrix * vec4(position, 1.0);
-        float w1 = sin(worldPos.z * 0.14 - uTime * 2.1 + worldPos.x * 0.03) * 0.26;
-        float w2 = cos(worldPos.x * 0.09 + uTime * 1.45 - worldPos.z * 0.08) * 0.14;
-        float shoreDamp = smoothstep(188.0, 206.0, worldPos.z);
-        worldPos.y += (w1 + w2) * shoreDamp;
-        vWave = w1 + w2;
+        float swell1 = sin(worldPos.z * 0.15 - uTime * 2.1 + sin(worldPos.x * 0.025) * 1.8) * 0.30;
+        float swell2 = cos(worldPos.x * 0.085 + worldPos.z * 0.09 - uTime * 1.55) * 0.16;
+        float chop = sin(worldPos.z * 0.34 - worldPos.x * 0.14 - uTime * 2.8) * 0.08;
+        float shoreDamp = smoothstep(187.0, 206.0, worldPos.z);
+        float h = (swell1 + swell2 + chop) * shoreDamp;
+        worldPos.y += h;
+        vWave = swell1 + swell2 + chop;
+        vSlope = cos(worldPos.z * 0.15 - uTime * 2.1) * 0.6 + sin(worldPos.x * 0.09 - uTime * 1.5) * 0.4;
         vWorldPos = worldPos.xyz;
         gl_Position = projectionMatrix * viewMatrix * worldPos;
       }
@@ -373,63 +400,89 @@ export function createArabianSeaAndBeach(): ArabianSeaRig {
       uniform float uNightFactor;
       varying vec3 vWorldPos;
       varying float vWave;
+      varying float vSlope;
 
       void main() {
-        float distFromShore = max(0.0, vWorldPos.z - 190.0);
-        float shallowT = smoothstep(0.0, 38.0, distFromShore);
-        float horizonT = smoothstep(180.0, 440.0, distFromShore);
+        float distFromShore = max(0.0, vWorldPos.z - 189.0);
+        float shallowT = smoothstep(0.0, 28.0, distFromShore);
+        float midT = smoothstep(24.0, 98.0, distFromShore);
+        float horizonT = smoothstep(165.0, 440.0, distFromShore);
 
-        vec3 shallowCol = mix(vec3(0.08, 0.68, 0.74), vec3(0.03, 0.22, 0.34), uNightFactor);
-        vec3 deepCol = mix(vec3(0.04, 0.29, 0.56), vec3(0.02, 0.08, 0.20), uNightFactor);
-        vec3 col = mix(shallowCol, deepCol, shallowT);
+        // Physically grounded Arabian Sea palette (no neon cyan!)
+        vec3 shoreEmerald = mix(vec3(0.09, 0.52, 0.54), vec3(0.03, 0.17, 0.24), uNightFactor);
+        vec3 midTealBlue = mix(vec3(0.05, 0.31, 0.48), vec3(0.02, 0.10, 0.22), uNightFactor);
+        vec3 deepArabian = mix(vec3(0.03, 0.16, 0.32), vec3(0.01, 0.05, 0.13), uNightFactor);
 
-        // Animated foamy white surf bands washing onto the golden sand
-        float surfPhase = sin(vWorldPos.z * 0.45 - uTime * 2.6 + sin(vWorldPos.x * 0.07) * 1.6);
-        float shoreFoam = (1.0 - smoothstep(0.0, 11.0, distFromShore)) * smoothstep(0.25, 0.85, surfPhase);
-        float crestFoam = smoothstep(0.26, 0.38, vWave) * 0.35;
-        col = mix(col, vec3(0.95, 0.98, 1.0), clamp(shoreFoam * 0.85 + crestFoam, 0.0, 0.9));
+        vec3 col = mix(shoreEmerald, midTealBlue, shallowT);
+        col = mix(col, deepArabian, midT);
 
-        // Sun shimmer glints dancing across wave facets
-        float glint = pow(max(0.0, sin(vWorldPos.x * 0.22 + vWorldPos.z * 0.31 - uTime * 2.8)), 10.0);
-        col += uSunColor * glint * 0.38 * (1.0 - uNightFactor * 0.7);
+        // Subtle Fresnel sky reflection across grazing water angles
+        vec3 viewDir = normalize(cameraPosition - vWorldPos);
+        float fresnel = pow(1.0 - max(dot(viewDir, vec3(0.0, 1.0, 0.0)), 0.0), 3.0);
+        col = mix(col, uSkyHorizon * 0.92, clamp(fresnel * 0.42, 0.0, 0.45));
 
-        // Blend far horizon smoothly into sky horizon
+        // Animated water surface ripple shading & shallow sun caustics
+        float rippleA = sin(vWorldPos.x * 0.38 + vWorldPos.z * 0.52 - uTime * 2.8);
+        float rippleB = cos(vWorldPos.x * 0.55 - vWorldPos.z * 0.41 + uTime * 2.2);
+        float caustic = smoothstep(0.38, 0.95, rippleA * 0.55 + rippleB * 0.45);
+        col += vec3(0.05, 0.16, 0.18) * caustic * (1.0 - midT * 0.65) * (1.0 - uNightFactor * 0.72);
+        col += vec3(0.03, 0.07, 0.10) * clamp(vSlope, -0.4, 0.6);
+
+        // Multi-layered rolling natural seafoam washing onto the golden sand
+        float waveCurve = sin(vWorldPos.x * 0.055) * 2.2 + cos(vWorldPos.x * 0.12) * 0.9;
+        float surf1 = sin((vWorldPos.z + waveCurve) * 0.46 - uTime * 2.55);
+        float surf2 = sin((vWorldPos.z - waveCurve * 0.6) * 0.78 - uTime * 3.15);
+        float shoreBand = 1.0 - smoothstep(0.0, 17.5, distFromShore);
+        float breakingFoam = shoreBand * (smoothstep(0.38, 0.88, surf1) * 0.82 + smoothstep(0.58, 0.95, surf2) * 0.42);
+        float edgeLace = (1.0 - smoothstep(0.0, 3.6, distFromShore)) * (0.55 + 0.45 * surf1);
+        float crestWhitecap = smoothstep(0.30, 0.48, vWave) * 0.36 * (1.0 - horizonT * 0.6);
+        float totalFoam = clamp(breakingFoam + edgeLace * 0.68 + crestWhitecap, 0.0, 0.90);
+        col = mix(col, vec3(0.91, 0.94, 0.95), totalFoam);
+
+        // Soft warm sun-glitter reflection across the waves
+        float sunCorridor = exp(-pow(vWorldPos.x * 0.0085, 2.0));
+        float sparkle = pow(max(0.0, rippleA * rippleB), 4.0) * (0.35 + sunCorridor * 0.85);
+        col += uSunColor * sparkle * 0.48 * (1.0 - uNightFactor * 0.75);
+
+        // Smooth atmospheric horizon haze
         col = mix(col, uSkyHorizon, horizonT * 0.82);
 
-        float alpha = smoothstep(-2.0, 4.5, vWorldPos.z - 188.0);
-        gl_FragColor = vec4(col, clamp(alpha * 0.94, 0.0, 0.96));
+        float alpha = smoothstep(-1.5, 4.0, vWorldPos.z - 187.5);
+        gl_FragColor = vec4(col, clamp(alpha * 0.96, 0.0, 0.97));
       }
     `,
   });
-  const seaGeo = new THREE.PlaneGeometry(1260, 470, 52, 26);
+  // 48x24 mesh gives identical smooth ocean swells at 55% fewer shaded vertices every frame!
+  const seaGeo = new THREE.PlaneGeometry(1320, 480, 48, 24);
   seaGeo.rotateX(-Math.PI / 2);
   const seaMesh = new THREE.Mesh(seaGeo, seaMat);
-  seaMesh.position.set(0, -0.04, 422);
+  seaMesh.position.set(0, -0.02, 427);
   group.add(seaMesh);
 
-  // 6. Colorful Traditional Kerala Fishing Boats (Vallams) bobbing offshore
+  // 6. Five Traditional Painted Kerala Fishing Boats (Vallams) bobbing offshore (shared geometries/materials)
   const boats: ArabianSeaRig['boats'] = [];
   const boatConfigs = [
-    { x: -42, z: 218, color: 0xdc2626 },
-    { x: 18, z: 232, color: 0x0284c7 },
-    { x: 64, z: 222, color: 0x16a34a },
+    { x: -64, z: 220, color: 0xb8382c },
+    { x: -28, z: 214, color: 0xc98229 },
+    { x: 16, z: 228, color: 0x26658c },
+    { x: 52, z: 218, color: 0x2c734e },
+    { x: 84, z: 234, color: 0x5c4b82 },
   ];
+  const boatHullGeo = new THREE.BoxGeometry(1.5, 0.65, 5.2);
+  const boatStripeGeo = new THREE.BoxGeometry(1.58, 0.16, 4.8);
+  const boatCanopyGeo = new THREE.BoxGeometry(1.3, 0.8, 1.8);
+  const boatStripeMat = new THREE.MeshStandardMaterial({ color: 0xe6c35c, roughness: 0.58 });
+  const boatCanopyMat = new THREE.MeshStandardMaterial({ color: 0xece8df, roughness: 0.74 });
   boatConfigs.forEach((bc, idx) => {
     const boat = new THREE.Group();
     const hull = new THREE.Mesh(
-      new THREE.BoxGeometry(1.5, 0.65, 5.2),
-      new THREE.MeshStandardMaterial({ color: bc.color, roughness: 0.6 }),
+      boatHullGeo,
+      new THREE.MeshStandardMaterial({ color: bc.color, roughness: 0.68 }),
     );
     hull.position.y = 0.28;
-    const stripe = new THREE.Mesh(
-      new THREE.BoxGeometry(1.58, 0.16, 4.8),
-      new THREE.MeshStandardMaterial({ color: 0xfde047, roughness: 0.5 }),
-    );
+    const stripe = new THREE.Mesh(boatStripeGeo, boatStripeMat);
     stripe.position.y = 0.44;
-    const canopy = new THREE.Mesh(
-      new THREE.BoxGeometry(1.3, 0.8, 1.8),
-      new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.7 }),
-    );
+    const canopy = new THREE.Mesh(boatCanopyGeo, boatCanopyMat);
     canopy.position.set(0, 0.9, -0.4);
     boat.add(hull, stripe, canopy);
     boat.position.set(bc.x, 0, bc.z);
@@ -438,7 +491,48 @@ export function createArabianSeaAndBeach(): ArabianSeaRig {
     boats.push({ mesh: boat, baseX: bc.x, baseZ: bc.z, phase: idx * 2.1 });
   });
 
-  return { group, seaUniforms, boats };
+  // 7. Seven Soaring White Coastal Seagulls circling gently over Malabar Beach & the Arabian Sea
+  const seagulls: ArabianSeaRig['seagulls'] = [];
+  const gullMat = new THREE.MeshLambertMaterial({ color: 0xf8fafc });
+  const gullTipMat = new THREE.MeshLambertMaterial({ color: 0x334155 });
+  const gullBodyGeo = new THREE.BoxGeometry(0.18, 0.14, 0.56);
+  const gullWingGeo = new THREE.BoxGeometry(0.68, 0.05, 0.2);
+
+  for (let i = 0; i < 7; i++) {
+    const gull = new THREE.Group();
+    const body = new THREE.Mesh(gullBodyGeo, gullMat);
+    const wingL = new THREE.Mesh(gullWingGeo, gullMat);
+    wingL.position.set(-0.34, 0.02, 0);
+    const wingR = new THREE.Mesh(gullWingGeo, gullMat);
+    wingR.position.set(0.34, 0.02, 0);
+    const tipL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.052, 0.16), gullTipMat);
+    tipL.position.set(-0.62, 0.02, 0);
+    const tipR = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.052, 0.16), gullTipMat);
+    tipR.position.set(0.62, 0.02, 0);
+    wingL.add(tipL);
+    wingR.add(tipR);
+    gull.add(body, wingL, wingR);
+
+    const cx = -65 + i * 22;
+    const cz = 198 + (i % 3) * 14;
+    const radius = 14 + (i % 4) * 5;
+    const height = 11 + (i % 3) * 3.5;
+    gull.position.set(cx, height, cz);
+    group.add(gull);
+    seagulls.push({
+      mesh: gull,
+      leftWing: wingL,
+      rightWing: wingR,
+      cx,
+      cz,
+      radius,
+      height,
+      phase: i * 1.15,
+      speed: 0.36 + (i % 3) * 0.09,
+    });
+  }
+
+  return { group, seaUniforms, boats, seagulls };
 }
 
 /**
@@ -607,6 +701,35 @@ export function createDoubleTrackRailwayMesh(): THREE.Group {
  * - Sheltered platform canopies, benches & warm platform lights
  * - Walkable Elevated Foot-Overbridge (Platform Change Bridge) spanning both tracks with side stair ramps!
  */
+let _stnSharedMats: {
+  concreteMat: THREE.MeshStandardMaterial;
+  yellowLineMat: THREE.MeshStandardMaterial;
+  roofMat: THREE.MeshStandardMaterial;
+  pillarMat: THREE.MeshStandardMaterial;
+  bridgeMat: THREE.MeshStandardMaterial;
+  railGuardMat: THREE.MeshStandardMaterial;
+  benchMat: THREE.MeshStandardMaterial;
+  pf1Tex: THREE.CanvasTexture;
+  pfBTex: THREE.CanvasTexture;
+} | null = null;
+
+function getSharedStationAssets() {
+  if (!_stnSharedMats) {
+    _stnSharedMats = {
+      concreteMat: new THREE.MeshStandardMaterial({ color: 0xb8bcc0, roughness: 0.88 }),
+      yellowLineMat: new THREE.MeshStandardMaterial({ color: 0xdcb32c, roughness: 0.68 }),
+      roofMat: new THREE.MeshStandardMaterial({ color: 0x26416b, roughness: 0.58, metalness: 0.18 }),
+      pillarMat: new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.52, metalness: 0.45 }),
+      bridgeMat: new THREE.MeshStandardMaterial({ color: 0x3b4554, roughness: 0.56, metalness: 0.48 }),
+      railGuardMat: new THREE.MeshStandardMaterial({ color: 0xc98a22, roughness: 0.50 }),
+      benchMat: new THREE.MeshStandardMaterial({ color: 0x7c4620, roughness: 0.76 }),
+      pf1Tex: createRailwaySignTexture('PLATFORM 1', 'TRAINS: LEFT → RIGHT', '#1f447a', '#f8fafc', '#e6c54a'),
+      pfBTex: createRailwaySignTexture('PLATFORM B', 'TRAINS: RIGHT → LEFT', '#7f2424', '#f8fafc', '#e6c54a'),
+    };
+  }
+  return _stnSharedMats;
+}
+
 export function createRailwayStationModel(station: RailwayStationDef): THREE.Group {
   const root = new THREE.Group();
   root.position.set(station.centerX, 0, station.centerZ);
@@ -621,23 +744,25 @@ export function createRailwayStationModel(station: RailwayStationDef): THREE.Gro
   const outwardSign =
     localPlusXWorldX * station.outwardX + localPlusXWorldZ * station.outwardZ >= 0 ? 1 : -1;
 
-  const concreteMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.85 });
-  const yellowLineMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.6 });
-  const roofMat = new THREE.MeshStandardMaterial({ color: 0x1e3a8a, roughness: 0.55 });
-  const pillarMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.5, metalness: 0.45 });
-  const bridgeMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.5, metalness: 0.5 });
-  const railGuardMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.45 });
-  const benchMat = new THREE.MeshStandardMaterial({ color: 0x92400e, roughness: 0.72 });
+  const {
+    concreteMat,
+    yellowLineMat,
+    roofMat,
+    pillarMat,
+    bridgeMat,
+    railGuardMat,
+    benchMat,
+    pf1Tex,
+    pfBTex,
+  } = getSharedStationAssets();
 
   const stationBoardTex = createRailwaySignTexture(
     `${station.name.toUpperCase()} (${station.code})`,
     station.mlName,
-    '#facc15',
-    '#111827',
-    '#111827',
+    '#e4bc2f',
+    '#141923',
+    '#141923',
   );
-  const pf1Tex = createRailwaySignTexture('PLATFORM 1', 'TRAINS: LEFT → RIGHT', '#1d4ed8', '#ffffff', '#fde047');
-  const pfBTex = createRailwaySignTexture('PLATFORM B', 'TRAINS: RIGHT → LEFT', '#991b1b', '#ffffff', '#fde047');
 
   // Build Platform 1 (inner = -outwardSign) and Platform B (outer = +outwardSign)
   const platforms: { id: '1' | 'B'; sideSign: number; signTex: THREE.CanvasTexture }[] = [
@@ -774,31 +899,41 @@ export function createRailwayStationModel(station: RailwayStationDef): THREE.Gro
  * with unique livery, train number & name side boards, glowing headlights, roof pantograph,
  * and framed passenger windows!
  */
+let _trainBogieMat: THREE.MeshStandardMaterial | null = null;
+let _trainGlassMat: THREE.MeshStandardMaterial | null = null;
+
 export function createKeralaTrainRig(def: TrainDef): KeralaTrainRig {
   const root = new THREE.Group();
   const cars: THREE.Group[] = [];
 
-  const locoMat = new THREE.MeshStandardMaterial({ color: def.locoColor, roughness: 0.36, metalness: 0.25 });
-  const coachMat = new THREE.MeshStandardMaterial({ color: def.coachColor, roughness: 0.4, metalness: 0.22 });
-  const stripeMat = new THREE.MeshStandardMaterial({ color: def.stripeColor, roughness: 0.35 });
-  const roofMat = new THREE.MeshStandardMaterial({ color: def.roofColor, roughness: 0.5 });
-  const bogieMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.7, metalness: 0.5 });
-  const glassMat = new THREE.MeshStandardMaterial({
-    color: 0x0f172a,
-    emissive: 0x1e3a5f,
-    emissiveIntensity: 0.35,
-    roughness: 0.12,
-    metalness: 0.85,
-  });
-  const headlightMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+  if (!_trainBogieMat) {
+    _trainBogieMat = new THREE.MeshStandardMaterial({ color: 0x20262e, roughness: 0.72, metalness: 0.55 });
+  }
+  if (!_trainGlassMat) {
+    _trainGlassMat = new THREE.MeshStandardMaterial({
+      color: 0x132030,
+      emissive: 0x1d3550,
+      emissiveIntensity: 0.28,
+      roughness: 0.14,
+      metalness: 0.82,
+    });
+  }
+
+  const locoMat = new THREE.MeshStandardMaterial({ color: def.locoColor, roughness: 0.34, metalness: 0.34 });
+  const coachMat = new THREE.MeshStandardMaterial({ color: def.coachColor, roughness: 0.36, metalness: 0.30 });
+  const stripeMat = new THREE.MeshStandardMaterial({ color: def.stripeColor, roughness: 0.38, metalness: 0.18 });
+  const roofMat = new THREE.MeshStandardMaterial({ color: def.roofColor, roughness: 0.52, metalness: 0.22 });
+  const bogieMat = _trainBogieMat;
+  const glassMat = _trainGlassMat;
+  const headlightMat = new THREE.MeshBasicMaterial({ color: 0xfef3c7 });
   const nameBoardTex = createRailwaySignTexture(
     `${def.number} ${def.name.toUpperCase()}`,
     def.mlName,
-    '#0f172a',
-    '#fde047',
-    '#f59e0b',
+    '#141c28',
+    '#edd268',
+    '#d19628',
   );
-  const boardMat = new THREE.MeshStandardMaterial({ map: nameBoardTex, roughness: 0.45 });
+  const boardMat = new THREE.MeshStandardMaterial({ map: nameBoardTex, roughness: 0.48 });
 
   // 1. LOCOMOTIVE (Car 0 — 10.6m long)
   const loco = new THREE.Group();

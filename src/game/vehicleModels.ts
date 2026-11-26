@@ -18,6 +18,55 @@ export interface VehicleModelRig {
  * Proportions match Sheru Bhai (~2.1u tall) so no vehicle looks giant or oversized,
  * and geometry stays lightweight for smooth 4GB-RAM laptop performance.
  */
+let _vehGlassMat: THREE.MeshStandardMaterial | null = null;
+let _vehDarkMat: THREE.MeshStandardMaterial | null = null;
+let _vehChromeMat: THREE.MeshStandardMaterial | null = null;
+let _vehHeadlightMat: THREE.MeshStandardMaterial | null = null;
+let _vehTaillightMat: THREE.MeshStandardMaterial | null = null;
+
+function getSharedVehicleMats() {
+  if (!_vehGlassMat) {
+    _vehGlassMat = new THREE.MeshStandardMaterial({
+      color: 0x1b2e40,
+      roughness: 0.14,
+      metalness: 0.72,
+      transparent: true,
+      opacity: 0.84,
+    });
+  }
+  if (!_vehDarkMat) {
+    _vehDarkMat = new THREE.MeshStandardMaterial({ color: 0x1c1e22, roughness: 0.85, metalness: 0.08 });
+  }
+  if (!_vehChromeMat) {
+    _vehChromeMat = new THREE.MeshStandardMaterial({
+      color: 0xd9dde2,
+      roughness: 0.22,
+      metalness: 0.88,
+    });
+  }
+  if (!_vehHeadlightMat) {
+    _vehHeadlightMat = new THREE.MeshStandardMaterial({
+      color: 0xfff6d4,
+      emissive: 0xffd970,
+      emissiveIntensity: 0.75,
+    });
+  }
+  if (!_vehTaillightMat) {
+    _vehTaillightMat = new THREE.MeshStandardMaterial({
+      color: 0xb91c1c,
+      emissive: 0xdc2626,
+      emissiveIntensity: 0.5,
+    });
+  }
+  return {
+    glassMat: _vehGlassMat,
+    darkMat: _vehDarkMat,
+    chromeMat: _vehChromeMat,
+    headlightMat: _vehHeadlightMat,
+    taillightMat: _vehTaillightMat,
+  };
+}
+
 export function createDetailedVehicleModel(def: VehicleDef): VehicleModelRig {
   const root = new THREE.Group();
   root.position.set(def.x, 0, def.z);
@@ -28,37 +77,15 @@ export function createDetailedVehicleModel(def: VehicleDef): VehicleModelRig {
 
   const paintMat = new THREE.MeshStandardMaterial({
     color: def.color,
-    roughness: 0.28,
-    metalness: 0.45,
+    roughness: 0.26,
+    metalness: 0.42,
   });
   const accentMat = new THREE.MeshStandardMaterial({
     color: def.accentColor,
-    roughness: 0.3,
-    metalness: 0.55,
+    roughness: 0.32,
+    metalness: 0.48,
   });
-  const glassMat = new THREE.MeshStandardMaterial({
-    color: 0x1e3a52,
-    roughness: 0.12,
-    metalness: 0.65,
-    transparent: true,
-    opacity: 0.85,
-  });
-  const darkMat = new THREE.MeshStandardMaterial({ color: 0x1e2024, roughness: 0.8 });
-  const chromeMat = new THREE.MeshStandardMaterial({
-    color: 0xe5e7eb,
-    roughness: 0.2,
-    metalness: 0.88,
-  });
-  const headlightMat = new THREE.MeshStandardMaterial({
-    color: 0xfff8d6,
-    emissive: 0xffe066,
-    emissiveIntensity: 0.9,
-  });
-  const taillightMat = new THREE.MeshStandardMaterial({
-    color: 0xdc2626,
-    emissive: 0xef4444,
-    emissiveIntensity: 0.55,
-  });
+  const { glassMat, darkMat, chromeMat, headlightMat, taillightMat } = getSharedVehicleMats();
 
   let sirenRedMat: THREE.MeshStandardMaterial | undefined;
   let sirenBlueMat: THREE.MeshStandardMaterial | undefined;

@@ -1502,6 +1502,25 @@ function buildWalkInHospitalBuilding(
   };
 }
 
+let _sharedPlinthMat: THREE.MeshStandardMaterial | null = null;
+let _sharedGoldMat: THREE.MeshStandardMaterial | null = null;
+let _sharedDoorFrameMat: THREE.MeshStandardMaterial | null = null;
+let _sharedDoorRecessMat: THREE.MeshStandardMaterial | null = null;
+const _sharedRoofMatCache = new Map<number, THREE.MeshStandardMaterial>();
+
+function getBuildingSharedMats() {
+  if (!_sharedPlinthMat) _sharedPlinthMat = new THREE.MeshStandardMaterial({ color: 0x868178, roughness: 0.92 });
+  if (!_sharedGoldMat) _sharedGoldMat = new THREE.MeshStandardMaterial({ color: 0xd9ab36, roughness: 0.24, metalness: 0.86 });
+  if (!_sharedDoorFrameMat) _sharedDoorFrameMat = new THREE.MeshStandardMaterial({ color: 0x4d311d, roughness: 0.7 });
+  if (!_sharedDoorRecessMat) _sharedDoorRecessMat = new THREE.MeshStandardMaterial({ color: 0x2a1b12, roughness: 0.58 });
+  return {
+    plinthMat: _sharedPlinthMat,
+    goldMat: _sharedGoldMat,
+    doorFrameMat: _sharedDoorFrameMat,
+    doorRecessMat: _sharedDoorRecessMat,
+  };
+}
+
 export function createBuildingModel(
   def: BuildingDef,
   owned: OwnedBusinessRecord | undefined,
@@ -1516,30 +1535,29 @@ export function createBuildingModel(
   group.position.set(def.x, 0, def.z);
   group.rotation.y = def.rotationY;
 
-  const plinthMat = new THREE.MeshStandardMaterial({ color: 0x8f8a82, roughness: 0.9 });
+  const { plinthMat, goldMat, doorFrameMat, doorRecessMat } = getBuildingSharedMats();
   const wallMat = new THREE.MeshStandardMaterial({
     color: def.wallColor,
-    roughness: 0.76,
-    metalness: 0.04,
+    roughness: 0.82,
+    metalness: 0.03,
     bumpMap: plasterBump,
     bumpScale: 0.06,
   });
-  const roofTex = createRoofTileTexture(def.roofColor, maxAnisotropy);
-  const roofMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    map: roofTex,
-    roughness: 0.65,
-    metalness: 0.08,
-  });
+  let roofMat = _sharedRoofMatCache.get(def.roofColor);
+  if (!roofMat) {
+    const roofTex = createRoofTileTexture(def.roofColor, maxAnisotropy);
+    roofMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: roofTex,
+      roughness: 0.72,
+      metalness: 0.06,
+    });
+    _sharedRoofMatCache.set(def.roofColor, roofMat);
+  }
   const accentMat = new THREE.MeshStandardMaterial({
     color: def.accentColor,
-    roughness: 0.42,
-    metalness: 0.25,
-  });
-  const goldMat = new THREE.MeshStandardMaterial({
-    color: 0xf4c430,
-    roughness: 0.22,
-    metalness: 0.88,
+    roughness: 0.48,
+    metalness: 0.2,
   });
 
   // Raised Kerala verandah plinth
@@ -1614,9 +1632,7 @@ export function createBuildingModel(
     group.add(roof);
   }
 
-  // Framed front doorway with jambs & wooden double door
-  const doorFrameMat = new THREE.MeshStandardMaterial({ color: 0x4a2c18, roughness: 0.65 });
-  const doorRecessMat = new THREE.MeshStandardMaterial({ color: 0x261710, roughness: 0.5 });
+  // Framed front doorway with jambs & wooden double door (reusing pooled materials)
   const doorW = Math.min(3.2, def.width * 0.3);
   const doorH = 3.0;
   const doorZ = def.depth / 2 + 0.04;
@@ -1634,7 +1650,7 @@ export function createBuildingModel(
   lintel.position.set(0, 0.45 + doorH + 0.14, doorZ + 0.08);
   group.add(lintel);
 
-  // Striped colorful Kerala shop awning above front entrance
+  // Striped Kerala shop awning above front entrance
   const awning = new THREE.Mesh(
     new THREE.BoxGeometry(def.width * 0.86, 0.24, 2.2),
     accentMat,
@@ -1644,14 +1660,14 @@ export function createBuildingModel(
   awning.castShadow = true;
   group.add(awning);
 
-  // Glowing front windows (illuminated brightly at night!)
+  // Realistic tinted architectural windows (warm interior glow at dusk/night)
   const windowMats: THREE.MeshStandardMaterial[] = [];
   const winMat = new THREE.MeshStandardMaterial({
-    color: 0x6ec1e4,
-    emissive: 0xffd166,
-    emissiveIntensity: 0.15,
-    roughness: 0.14,
-    metalness: 0.4,
+    color: 0x3b6278,
+    emissive: 0xffca66,
+    emissiveIntensity: 0.12,
+    roughness: 0.16,
+    metalness: 0.56,
   });
   windowMats.push(winMat);
 
@@ -2135,25 +2151,25 @@ let _palmLodCrownMat: THREE.MeshLambertMaterial | null = null;
 
 function ensurePalmSharedAssets() {
   if (!_palmTrunkMat) {
-    _palmTrunkMat = new THREE.MeshStandardMaterial({ color: 0x7a5738, roughness: 0.92 });
+    _palmTrunkMat = new THREE.MeshStandardMaterial({ color: 0x6b5642, roughness: 0.94 });
   }
   if (!_palmCocoGeo) _palmCocoGeo = new THREE.SphereGeometry(0.26, 8, 8);
   if (!_palmCocoMat) {
-    _palmCocoMat = new THREE.MeshStandardMaterial({ color: 0x4b7d2c, roughness: 0.52 });
+    _palmCocoMat = new THREE.MeshStandardMaterial({ color: 0x4b7430, roughness: 0.58 });
   }
   if (!_palmBlade1Geo) _palmBlade1Geo = new THREE.BoxGeometry(0.65, 0.06, 2.2);
   if (!_palmBlade2Geo) _palmBlade2Geo = new THREE.BoxGeometry(0.5, 0.05, 1.9);
   if (!_palmFrondMat) {
     _palmFrondMat = new THREE.MeshStandardMaterial({
-      color: 0x2d7d3a,
-      roughness: 0.62,
+      color: 0x2e6430,
+      roughness: 0.68,
       side: THREE.DoubleSide,
     });
   }
   if (!_palmLodTrunkGeo) _palmLodTrunkGeo = new THREE.CylinderGeometry(0.18, 0.34, 1, 5);
-  if (!_palmLodTrunkMat) _palmLodTrunkMat = new THREE.MeshLambertMaterial({ color: 0x7a5738 });
+  if (!_palmLodTrunkMat) _palmLodTrunkMat = new THREE.MeshLambertMaterial({ color: 0x6b5642 });
   if (!_palmLodCrownGeo) _palmLodCrownGeo = new THREE.ConeGeometry(3.2, 1.55, 6);
-  if (!_palmLodCrownMat) _palmLodCrownMat = new THREE.MeshLambertMaterial({ color: 0x2d7d3a });
+  if (!_palmLodCrownMat) _palmLodCrownMat = new THREE.MeshLambertMaterial({ color: 0x2e6430 });
 }
 
 export function createCoconutPalmRig(height = 9.5, curveLean = 1.2): CoconutPalmRig {
@@ -3473,11 +3489,11 @@ export interface SkyDomeRig {
  */
 export function createRealisticSkyDome(): SkyDomeRig {
   const uniforms = {
-    uTopColor: { value: new THREE.Color(0x1f6fd8) },
-    uHorizonColor: { value: new THREE.Color(0xa9dcfa) },
-    uBottomColor: { value: new THREE.Color(0x4b778d) },
+    uTopColor: { value: new THREE.Color(0x3a76b8) },
+    uHorizonColor: { value: new THREE.Color(0xc2dcf0) },
+    uBottomColor: { value: new THREE.Color(0x5c7788) },
     uSunDir: { value: new THREE.Vector3(0.45, 0.7, 0.35).normalize() },
-    uSunColor: { value: new THREE.Color(0xfff4d2) },
+    uSunColor: { value: new THREE.Color(0xfff3de) },
     uSunGlow: { value: 1.0 },
   };
 
@@ -3508,17 +3524,20 @@ export function createRealisticSkyDome(): SkyDomeRig {
         float h = dir.y;
         vec3 col;
         if (h >= 0.0) {
-          float t = pow(clamp(h, 0.0, 1.0), 0.56);
+          float t = pow(clamp(h, 0.0, 1.0), 0.52);
           col = mix(uHorizonColor, uTopColor, t);
+          // Warm humid tropical horizon mist band
+          float hazeBand = exp(-h * 9.5) * 0.14 * uSunGlow;
+          col = mix(col, uSunColor, hazeBand);
         } else {
           float b = clamp(-h * 2.4, 0.0, 1.0);
           col = mix(uHorizonColor, uBottomColor, b);
         }
 
-        // Soft solar aureole + crisp sun disc
+        // Soft Rayleigh solar aureole + subtle crisp sun disc
         float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
-        float halo = pow(sunDot, 12.0) * 0.28 * uSunGlow;
-        float core = smoothstep(0.9965, 0.9992, sunDot) * 1.1 * uSunGlow;
+        float halo = pow(sunDot, 10.0) * 0.24 * uSunGlow;
+        float core = smoothstep(0.9968, 0.9993, sunDot) * 0.95 * uSunGlow;
         col += uSunColor * (halo + core);
 
         gl_FragColor = vec4(col, 1.0);
@@ -3528,7 +3547,7 @@ export function createRealisticSkyDome(): SkyDomeRig {
 
   // Unit sphere scaled dynamically to 0.85 * camera.far and centered on camera.position every frame
   // so the far clipping plane can NEVER carve a blue/dark circle out of the sky!
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 20), mat);
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), mat);
   mesh.frustumCulled = false;
   mesh.renderOrder = -1000;
   return { mesh, uniforms };

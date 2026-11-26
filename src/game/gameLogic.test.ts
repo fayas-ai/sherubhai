@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AIRPORT_RUNWAY,
+  evaluateAirplaneHazard,
   evaluateAirplaneLanding,
   isAircraftType,
   isPointOnAirportTarmac,
@@ -11,18 +12,29 @@ import {
   stepGroundVehiclePhysics,
 } from './vehiclePhysics';
 import {
+  AUX_PAVED_ROADS,
+  SHERU_STATUE_ROUNDABOUT,
   TOWN_CROWD_ROUTES,
   TOWN_PALM_TREES,
   TOWN_ROADS,
   TOWN_TRAFFIC_ROUTES,
+  computeRoadAutopilotTarget,
+  computeSirenYieldBehavior,
+  constrainVehicleToDrivableRoads,
   doesBoxOverlapAnyRoad,
   isPointOnAnyRoad,
+  isPointOnDrivablePavement,
+  snapPointToNearestRoad,
 } from './roadNetwork';
 import {
   buildWeatherHudState,
   createInitialWeatherState,
   cycleWeatherCondition,
+  generateStreetPuddleSpecs,
+  getActivePuddleCount,
+  getEffectiveFogRange,
   getWeatherVisualConfig,
+  isPointInActivePuddle,
   stepWeatherCycle,
 } from './weatherLogic';
 import {
@@ -64,6 +76,11 @@ import {
 import {
   WORLD_RAMPS,
   createOpenWorldProps,
+  distanceToOBB,
+  distanceToVehicleHull,
+  findSafeVehicleExitPoint,
+  getVehicleSolidOBBs,
+  resolveCharacterSolidBodies,
   resolveVehiclePairCollision,
   sampleWorldSurface,
   stepCharacterPhysics,
@@ -83,6 +100,7 @@ import {
   fastForwardNextTrainAtPlatform,
   findPlayerPlatformContext,
   isPointOnBeachZone,
+  sampleMountainElevation,
   sampleRailwayElevation,
   sampleTrackPoint,
   stationLocalToWorld,
@@ -836,7 +854,14 @@ test('Airport & south roads are completely open, Golden Statue sits at Main Junc
   }
 });
 
-test('Dynamic weather cycling advances Sunny -> Rain -> Mist -> Sunny, increments transitionId for HUD animations, and updates atmospheric visuals', () => {
+test('Dynamic weather cycling advances Sunny -> Rain -> Monsoon -> Mist -> Sunny, enforces heavy rain + darker Monsoon fog, and generates frequent Kerala street puddles', () => {
+  const hexLuminance = (hex: number) => {
+    const r = (hex >> 16) & 0xff;
+    const g = (hex >> 8) & 0xff;
+    const b = hex & 0xff;
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+
   let w = createInitialWeatherState('sunny', 20);
   assert.equal(w.condition, 'sunny');
   assert.equal(w.transitionId, 0);
@@ -849,7 +874,7 @@ test('Dynamic weather cycling advances Sunny -> Rain -> Mist -> Sunny, increment
   assert.equal(step.state.condition, 'sunny');
   assert.equal(buildWeatherHudState(step.state, 'day').cycleProgress, 0.5);
 
-  // Crossing the 20s phase boundary triggers dynamic shift to Monsoon Rain & bumps transitionId
+  // Crossing the 20s phase boundary triggers dynamic shift to Rain & bumps transitionId
   step = stepWeatherCycle(step.state, 5, true);
   assert.equal(step.changed, false);
   const toRain = stepWeatherCycle(step.state, 5, true);
@@ -858,29 +883,98 @@ test('Dynamic weather cycling advances Sunny -> Rain -> Mist -> Sunny, increment
   assert.equal(toRain.state.previousCondition, 'sunny');
   assert.equal(toRain.state.transitionId, 1);
 
-  // Manual cycle triggers Mist with incremented transitionId
-  const toMist = cycleWeatherCondition(toRain.state);
-  assert.equal(toMist.condition, 'mist');
-  assert.equal(toMist.transitionId, 2);
+  // Manual cycle advances Rain -> Monsoon -> Mist -> Sunny
+  const toMonsoon = cycleWeatherCondition(toRain.state);
+  assert.equal(toMonsoon.condition, 'monsoon');
+  assert.equal(toMonsoon.transitionId, 2);
 
-  // Cycling again wraps cleanly back to Sunny
+  const toMist = cycleWeatherCondition(toMonsoon);
+  assert.equal(toMist.condition, 'mist');
+  assert.equal(toMist.transitionId, 3);
+
   const backSunny = cycleWeatherCondition(toMist);
   assert.equal(backSunny.condition, 'sunny');
-  assert.equal(backSunny.transitionId, 3);
+  assert.equal(backSunny.transitionId, 4);
 
-  // Atmospheric visuals differ sharply across Sunny, Rain, and Mist
+  // Monsoon features heavier rain, darker fog, stronger wind, wet glossy streets, and denser fog range
   const sunnyCfg = getWeatherVisualConfig('sunny', 'day');
   const rainCfg = getWeatherVisualConfig('rain', 'day');
+  const monsoonCfg = getWeatherVisualConfig('monsoon', 'day');
   const mistCfg = getWeatherVisualConfig('mist', 'day');
-  assert.equal(rainCfg.rainDensity, 1);
+
   assert.equal(sunnyCfg.rainDensity, 0);
-  assert.ok(mistCfg.fogFar < rainCfg.fogFar && rainCfg.fogFar < sunnyCfg.fogFar);
-  assert.ok(rainCfg.sunIntensityMult < sunnyCfg.sunIntensityMult);
+  assert.ok(rainCfg.rainDensity > 0 && rainCfg.rainDensity < monsoonCfg.rainDensity);
+  assert.equal(monsoonCfg.rainDensity, 1);
+  assert.ok(monsoonCfg.rainFallSpeed > rainCfg.rainFallSpeed);
+  assert.ok(monsoonCfg.rainWindDrift > rainCfg.rainWindDrift);
+  assert.ok(monsoonCfg.rainOpacity > rainCfg.rainOpacity);
+  assert.ok(monsoonCfg.windKmh > rainCfg.windKmh);
+  assert.ok(monsoonCfg.sunIntensityMult < rainCfg.sunIntensityMult && rainCfg.sunIntensityMult < sunnyCfg.sunIntensityMult);
+  assert.ok(monsoonCfg.roadRoughness < rainCfg.roadRoughness && rainCfg.roadRoughness < sunnyCfg.roadRoughness);
+
+  // Darker & denser fog in Monsoon than Rain, Mist, and Sunny
+  assert.ok(hexLuminance(monsoonCfg.fogColorHex) < hexLuminance(rainCfg.fogColorHex));
+  assert.ok(hexLuminance(monsoonCfg.fogColorHex) < hexLuminance(mistCfg.fogColorHex));
+  assert.ok(monsoonCfg.fogFar < mistCfg.fogFar && mistCfg.fogFar < rainCfg.fogFar && rainCfg.fogFar < sunnyCfg.fogFar);
+
+  const monsoonEffFog = getEffectiveFogRange(monsoonCfg, 220, false);
+  const rainEffFog = getEffectiveFogRange(rainCfg, 220, false);
+  const sunnyEffFog = getEffectiveFogRange(sunnyCfg, 220, false);
+  assert.ok(monsoonEffFog.fogFar < rainEffFog.fogFar && rainEffFog.fogFar < sunnyEffFog.fogFar);
+
+  const monsoonHud = buildWeatherHudState(toMonsoon, 'day');
+  assert.equal(monsoonHud.condition, 'monsoon');
+  assert.equal(monsoonHud.label, 'Kerala Monsoon');
+  assert.equal(monsoonHud.shortLabel, 'Monsoon');
+  assert.equal(monsoonHud.puddleFrequency, 1);
 
   const mistHud = buildWeatherHudState(toMist, 'day');
   assert.equal(mistHud.condition, 'mist');
   assert.equal(mistHud.label, 'Backwater Mist');
-  assert.equal(mistHud.transitionId, 2);
+  assert.equal(mistHud.transitionId, 3);
+
+  // Street Puddles: strictly on paved Kerala roads, clear of Golden Sheru Statue, much more frequent in Monsoon!
+  const allPavedRoads = [...TOWN_ROADS, ...AUX_PAVED_ROADS];
+  const puddles = generateStreetPuddleSpecs(allPavedRoads, [
+    {
+      x: SHERU_STATUE_ROUNDABOUT.x,
+      z: SHERU_STATUE_ROUNDABOUT.z,
+      radius: SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.4,
+    },
+  ]);
+  assert.ok(puddles.length >= 60, `Expected frequent Kerala street puddles (>= 60), got ${puddles.length}`);
+
+  const sunnyPuddles = getActivePuddleCount(puddles, 'sunny');
+  const rainPuddles = getActivePuddleCount(puddles, 'rain');
+  const monsoonPuddles = getActivePuddleCount(puddles, 'monsoon');
+  const mistPuddles = getActivePuddleCount(puddles, 'mist');
+  assert.equal(sunnyPuddles, 0);
+  assert.ok(rainPuddles >= 20, `Expected Rain to show primary puddles, got ${rainPuddles}`);
+  assert.ok(
+    monsoonPuddles >= rainPuddles * 2,
+    `Expected Monsoon (${monsoonPuddles}) to have >= 2x more frequent puddles than Rain (${rainPuddles})`,
+  );
+  assert.equal(monsoonPuddles, puddles.length);
+  assert.ok(mistPuddles > 0 && mistPuddles <= rainPuddles);
+
+  for (const p of puddles) {
+    assert.ok(
+      isPointOnDrivablePavement(p.x, p.z, 0.2),
+      `Puddle ${p.id} at (${p.x}, ${p.z}) must lie on paved Kerala streets`,
+    );
+    const statueDist = Math.hypot(p.x - SHERU_STATUE_ROUNDABOUT.x, p.z - SHERU_STATUE_ROUNDABOUT.z);
+    assert.ok(
+      statueDist >= SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.4,
+      `Puddle ${p.id} overlaps Sheru Statue pedestal`,
+    );
+  }
+
+  // Splash hit-testing works on active Monsoon puddles and returns false in Sunny
+  const sampleMonsoonOnly = puddles.find((p) => p.tier === 'monsoon')!;
+  assert.ok(sampleMonsoonOnly, 'Expected monsoon-tier street puddles');
+  assert.equal(isPointInActivePuddle(sampleMonsoonOnly.x, sampleMonsoonOnly.z, puddles, 'sunny'), false);
+  assert.equal(isPointInActivePuddle(sampleMonsoonOnly.x, sampleMonsoonOnly.z, puddles, 'rain'), false);
+  assert.equal(isPointInActivePuddle(sampleMonsoonOnly.x, sampleMonsoonOnly.z, puddles, 'monsoon'), true);
 });
 
 test('Kerala Pickpocket Chase spawns thief & girl victim, runs within town bounds, and resolves via Gun, Slap Hand, and Hand to Police', () => {
@@ -1520,6 +1614,244 @@ test('Double-track Kerala Railway (4 named stations, 4 numbered/named trains, op
   assert.equal(canVehicleAccessBeach('airplane_airliner'), false);
   assert.equal(canVehicleAccessBeach('airplane_prop'), false);
 });
+
+test('Real physics upgrades: airplane blasts on Western Ghats mountain & off-airport landing/taxi, trains emergency-stop for humans/cars/objects on tracks, ground vehicles stay strictly on paved roads, autopilot orbits Sheru statue, and traffic pulls over for sirens', () => {
+  // 1. Real Aeroplane Crash Physics (Mountain BHOOOOM + Off-Airport Landing & Normal Taxi BHOOOOM)
+  // Sample the center of the tall Northern Sahyadri Western Ghats summit (-20, -290)
+  const peakElev = sampleMountainElevation(-20, -290);
+  assert.ok(peakElev > 70, `Expected tall Western Ghats mountain peak > 70m, got ${peakElev}`);
+  assert.equal(
+    evaluateAirplaneHazard(-20, peakElev - 10, -290, 22, false, false, false),
+    'mountain_blast',
+    'Flying straight into Western Ghats mountain must trigger mountain_blast',
+  );
+  // High above the peak stays safe
+  assert.equal(
+    evaluateAirplaneHazard(-20, peakElev + 25, -290, 22, false, false, false),
+    'safe',
+    'Flying cleanly above Western Ghats peak must stay safe',
+  );
+  // Landing outside airport -> off_airport_blast
+  assert.equal(
+    evaluateAirplaneHazard(0, 0.2, 20, 14, false, true, false),
+    'off_airport_blast',
+    'Landing outside airport tarmac must blast',
+  );
+  // Normally driving/taxiing outside airport tarmac (even without ever flying!) -> off_airport_blast
+  assert.equal(
+    evaluateAirplaneHazard(0, 0.1, -60, 8, false, false, false),
+    'off_airport_blast',
+    'Normally taxiing/driving aeroplane outside airport tarmac must blast',
+  );
+  // On Airport Runway 09/27 tarmac -> safe
+  assert.equal(
+    evaluateAirplaneHazard(AIRPORT_RUNWAY.centerX, 0, AIRPORT_RUNWAY.centerZ, 18, false, true, false),
+    'safe',
+    'Landing/taxiing on Kerala Airport Runway 09/27 must stay safe',
+  );
+
+  // 2. Train Emergency Stop for ANY Human, Car, or Object on the Railway Track
+  let sim = createInitialRailwayState();
+  const train0 = sim.trains[0];
+  const aheadPoint = sampleTrackPoint(train0.track, train0.distance + 14);
+
+  // Place a human right on the rails 14m ahead -> train MUST brake to full stop with obstacleBlocked=true!
+  let blockedSim = sim;
+  for (let i = 0; i < 40; i++) {
+    blockedSim = stepRailwaySimulation(blockedSim, 0.1, 0, [
+      { x: aheadPoint.x, y: 0, z: aheadPoint.z, radius: 1.0, label: 'Sheru Bhai' },
+    ]);
+  }
+  const stoppedTrain = blockedSim.trains[0];
+  assert.equal(stoppedTrain.obstacleBlocked, true, 'Train must flag obstacleBlocked when human is on track');
+  assert.equal(stoppedTrain.blockedByLabel, 'Sheru Bhai');
+  assert.equal(stoppedTrain.speed, 0, 'Train must come to a full 0 m/s emergency stop before hitting obstacle');
+
+  // Person safely up on the 4.9m Foot-Overbridge MUST NOT stop the train!
+  const bridgeSim = stepRailwaySimulation(sim, 0.2, 0, [
+    { x: aheadPoint.x, y: BRIDGE_DECK_Y, z: aheadPoint.z, radius: 1.0, label: 'Bridge Walker' },
+  ]);
+  assert.equal(
+    bridgeSim.trains[0].obstacleBlocked,
+    false,
+    'Person walking high on the 4.9m Foot-Overbridge must NOT stop the train',
+  );
+
+  // 3. Road-Only Ground Vehicle Containment ("no vehicles off paved roads!")
+  assert.equal(isPointOnDrivablePavement(0, 14, 0), true, 'Main Junction Avenue must be drivable');
+  assert.equal(isPointOnDrivablePavement(-46, 150, 0), true, 'Malabar Beach West Access Road must be drivable');
+  assert.equal(isPointOnDrivablePavement(20, 165.5, 0), true, 'Malabar Beachfront Parking Blvd must be drivable');
+  assert.equal(isPointOnDrivablePavement(35, 180, 0), false, 'Malabar Beach sand must NOT be drivable');
+  assert.equal(isPointOnDrivablePavement(-42, -55, 0), false, 'Open grass lawn must NOT be drivable');
+
+  const offRoadTry = constrainVehicleToDrivableRoads(0, 165.5, 0, 178);
+  assert.equal(offRoadTry.hitCurb, true, 'Trying to drive off Beach Parking onto beach sand must hit curb');
+  assert.ok(offRoadTry.z < 173, 'Vehicle must remain on paved parking boulevard, not beach sand');
+
+  const snapped = snapPointToNearestRoad(30, 182);
+  assert.equal(isPointOnDrivablePavement(snapped.x, snapped.z, 0.5), true);
+
+  // 4. Auto-Drive Sheru Statue Roundabout Avoidance (NEVER hits Golden Statue at (0, -4))
+  let ax = 0;
+  let az = 16;
+  let ayaw = Math.PI; // Facing North (-Z) straight toward Sheru's Statue!
+  let minStatueDist = Infinity;
+  for (let i = 0; i < 120; i++) {
+    const ap = computeRoadAutopilotTarget(ax, az, 0, -45);
+    const desired = Math.atan2(ap.targetX - ax, ap.targetZ - az);
+    const err = Math.atan2(Math.sin(desired - ayaw), Math.cos(desired - ayaw));
+    ayaw += Math.max(-0.22, Math.min(0.22, err));
+    ax += Math.sin(ayaw) * 0.6;
+    az += Math.cos(ayaw) * 0.6;
+    const dStatue = Math.hypot(ax - SHERU_STATUE_ROUNDABOUT.x, az - SHERU_STATUE_ROUNDABOUT.z);
+    if (dStatue < minStatueDist) minStatueDist = dStatue;
+  }
+  assert.ok(
+    minStatueDist > SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.0,
+    `Autopilot must orbit cleanly around Golden Sheru Statue, closest dist was ${minStatueDist.toFixed(2)}m`,
+  );
+
+  // 5. Siren Vehicles Emergency Pull-Over Yield ("siren vehicles varumbol all vehicles side kodukkanam")
+  const yieldClose = computeSirenYieldBehavior(3.2, 20, 0, [{ x: 3.2, z: 4, yaw: 0 }]);
+  assert.equal(yieldClose.yielding, true, 'Traffic within 44m of siren must yield');
+  assert.equal(yieldClose.hazardFlash, true, 'Yielding traffic must trigger hazard flash');
+  assert.equal(yieldClose.speedScale, 0, 'Traffic within 24m of siren must pull over and stop');
+  assert.ok(
+    Math.hypot(yieldClose.pullOverX, yieldClose.pullOverZ) > 1.5,
+    'Yielding traffic must pull laterally aside toward the road shoulder',
+  );
+
+  const yieldFar = computeSirenYieldBehavior(3.2, 100, 0, [{ x: 3.2, z: 4, yaw: 0 }]);
+  assert.equal(yieldFar.yielding, false, 'Distant traffic (>44m) must continue normally');
+});
+
+test('Common solid-body physics blocks walking through aeroplanes (fuselage & wings), vehicles, trains, NPCs, and Airport structures while keeping [E] prompts & exits clean', () => {
+  const colliders = getWorldColliders();
+
+  // 1. Malabar Sky Prop Plane at (20, 0, -127, yaw=Math.PI/2): fuselage + wide yellow-red wing
+  const propObbs = getVehicleSolidOBBs('airplane_prop', 20, 0, -127, Math.PI / 2);
+  assert.equal(propObbs.length, 2, 'Prop plane must have both fuselage and main wing solid OBBs');
+
+  // Walk straight North (-Z) from South side of fuselage (z = -124 -> trying to reach z = -130) for 120 frames
+  let px = 18.0; // Behind wing, directly beside fuselage
+  let pz = -124.5;
+  let pvx = 0;
+  let pvz = 0;
+  for (let i = 0; i < 120; i++) {
+    const prevX = px;
+    const prevZ = pz;
+    const step = stepCharacterPhysics(
+      { x: px, y: 0, z: pz, vx: pvx, vy: 0, vz: pvz, yaw: Math.PI, coyoteTimer: 0.12, jumpBufferTimer: 0 },
+      { moveX: 0, moveZ: -1, running: true },
+      colliders,
+      1 / 60,
+    );
+    const res = resolveCharacterSolidBodies(
+      step.x,
+      step.y,
+      step.z,
+      step.vx,
+      step.vz,
+      0.58,
+      propObbs,
+      [],
+      prevX,
+      prevZ,
+    );
+    px = res.x;
+    pz = res.z;
+    pvx = res.vx;
+    pvz = res.vz;
+  }
+  assert.ok(
+    pz > -127 + 0.72 + 0.55,
+    `Character must NEVER cross through Prop Plane fuselage from South to North! Got z=${pz.toFixed(2)}`,
+  );
+  assert.ok(
+    distanceToVehicleHull(px, pz, 'airplane_prop', 20, -127, Math.PI / 2) <= 3.2,
+    'Standing blocked right outside Prop Plane fuselage must still trigger [E] Fly prompt',
+  );
+
+  // Also test walking East (+X) straight into the Prop Plane's wide wing at z = -124 (wing extends to z = -122.85)
+  let wx = 17.0;
+  let wz = -124.2;
+  let wvx = 0;
+  let wvz = 0;
+  for (let i = 0; i < 120; i++) {
+    const prevX = wx;
+    const prevZ = wz;
+    const step = stepCharacterPhysics(
+      { x: wx, y: 0, z: wz, vx: wvx, vy: 0, vz: wvz, yaw: Math.PI / 2, coyoteTimer: 0.12, jumpBufferTimer: 0 },
+      { moveX: 1, moveZ: 0, running: true },
+      colliders,
+      1 / 60,
+    );
+    const res = resolveCharacterSolidBodies(
+      step.x,
+      step.y,
+      step.z,
+      step.vx,
+      step.vz,
+      0.58,
+      propObbs,
+      [],
+      prevX,
+      prevZ,
+    );
+    wx = res.x;
+    wz = res.z;
+    wvx = res.vx;
+    wvz = res.vz;
+  }
+  assert.ok(
+    wx < 20.3 - 0.85 - 0.52,
+    `Character must NEVER cross through Prop Plane wing from West to East! Got x=${wx.toFixed(2)}`,
+  );
+
+  // 2. Airborne aeroplane (y = 8) must NOT block walking underneath on the ground!
+  const airborneObbs = getVehicleSolidOBBs('airplane_airliner', -16, 8, -127, Math.PI / 2);
+  const underPlane = resolveCharacterSolidBodies(-16, 0, -127, 0, -4, 0.58, airborneObbs, []);
+  assert.equal(underPlane.collided, false, 'Airborne plane overhead must NOT block walking on ground');
+
+  // 3. Parked KSRTC Bus, Kerala Train coach, and NPC circle all block character crossing
+  const busObbs = getVehicleSolidOBBs('ksrtc_bus', 10, 0, 10, 0);
+  const busHit = resolveCharacterSolidBodies(10.5, 0, 10, -5, 0, 0.58, busObbs, [], 12.2, 10);
+  assert.equal(busHit.collided, true);
+  assert.ok(busHit.x >= 10 + 1.16 + 0.57, `Must stay outside bus right face, got x=${busHit.x.toFixed(2)}`);
+
+  const trainObb = [{ cx: 0, cz: 0, halfW: 1.48, halfL: 5.15, yaw: Math.PI / 2, minY: 0, maxY: 3.6 }];
+  const trainHit = resolveCharacterSolidBodies(0, 0, 0.2, 0, -6, 0.58, trainObb, [], 0, 2.5);
+  assert.equal(trainHit.collided, true);
+  assert.ok(trainHit.z >= 1.48 + 0.57, `Must stay on South side of Kerala Train coach, got z=${trainHit.z.toFixed(2)}`);
+
+  const npcHit = resolveCharacterSolidBodies(0.1, 0, 0, -3, 0, 0.58, [], [{ cx: 0, cz: 0, radius: 0.44, minY: 0, maxY: 1.9 }], 1.4, 0);
+  assert.equal(npcHit.collided, true);
+  assert.ok(npcHit.x >= 1.0, `Must stay outside solid NPC body, got x=${npcHit.x.toFixed(2)}`);
+
+  // 4. Airport static structure colliders block ATC Tower, GHOP Hangar walls, and Arch pillars (leaving road & north hangar bay clear!)
+  assert.equal(resolveCircleWorldCollision(-52, -113, 0.6, colliders).collided, true, 'ATC Tower must be solid');
+  assert.equal(resolveCircleWorldCollision(34, -106.5, 0.6, colliders).collided, true, 'Hangar back wall must be solid');
+  assert.equal(resolveCircleWorldCollision(34, -116, 0.6, colliders).collided, false, 'Hangar open bay interior must remain walkable');
+  assert.equal(resolveCircleWorldCollision(0, -104, 0.8, colliders).collided, false, 'Airport central road under gantry arch must stay open');
+  assert.equal(resolveCircleWorldCollision(-7.6, -104, 0.6, colliders).collided, true, 'Airport gantry left pillar must be solid');
+
+  // 5. Safe vehicle/aircraft exit point never overlaps its own hull or static buildings
+  const airlinerExit = findSafeVehicleExitPoint('airplane_airliner', -16, 0, -127, Math.PI / 2, true, colliders, 0.72);
+  const airlinerObbs = getVehicleSolidOBBs('airplane_airliner', -16, 0, -127, Math.PI / 2);
+  for (const obb of airlinerObbs) {
+    assert.ok(
+      distanceToOBB(airlinerExit.x, airlinerExit.z, obb) >= 0.7,
+      'Aircraft exit point must spawn completely outside fuselage & wings',
+    );
+  }
+  assert.equal(
+    resolveCircleWorldCollision(airlinerExit.x, airlinerExit.z, 0.72, colliders).collided,
+    false,
+    'Aircraft exit point must stay clear of buildings',
+  );
+});
+
+
 
 
 

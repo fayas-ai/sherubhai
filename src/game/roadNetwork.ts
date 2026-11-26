@@ -201,6 +201,351 @@ export function doesBoxOverlapAnyRoad(
 }
 
 /**
+ * Paved coastal & station connector roads so ground vehicles can drive on proper asphalt
+ * straight to Malabar Beach Parking (across the Railway Level Crossing) and to the stations,
+ * while staying strictly OFF grass lawns, sidewalks, and beach sand!
+ */
+export const AUX_PAVED_ROADS: RoadSegmentDef[] = [
+  {
+    id: 'beachAccessWestNS',
+    name: 'Malabar Beach West Access Road',
+    axis: 'ns',
+    x: -46,
+    z: 135,
+    width: 10,
+    length: 62, // z: 104 (Marine Drive) -> 166 (Beachfront Parking Blvd), 24m clear west of MLB station!
+    yOffset: 0.025,
+  },
+  {
+    id: 'beachAccessEastNS',
+    name: 'Malabar Beach East Access Road',
+    axis: 'ns',
+    x: 46,
+    z: 135,
+    width: 10,
+    length: 62, // z: 104 (Marine Drive) -> 166 (Beachfront Parking Blvd), 24m clear east of MLB station!
+    yOffset: 0.025,
+  },
+  {
+    id: 'beachParkingEW',
+    name: 'Malabar Beachfront Parking Blvd',
+    axis: 'ew',
+    x: 0,
+    z: 165.5,
+    width: 11,
+    length: 112, // x: -56..+56 connecting both beach access roads right behind Malabar Beach Promenade!
+    yOffset: 0.032,
+  },
+  {
+    id: 'kochiStationSpurEW',
+    name: 'Kochi Central Station Road',
+    axis: 'ew',
+    x: -136,
+    z: -22,
+    width: 8.5,
+    length: 56, // x: -164..-108
+    yOffset: 0.031,
+  },
+  {
+    id: 'ghatsStationSpurEW',
+    name: 'Ghats View Station Road',
+    axis: 'ew',
+    x: 136,
+    z: -22,
+    width: 8.5,
+    length: 56, // x: +108..+164
+    yOffset: 0.031,
+  },
+];
+
+export const SHERU_STATUE_ROUNDABOUT = {
+  x: 0,
+  z: -4,
+  pedestalRadius: 2.5,
+  orbitRadius: 6.2,
+  plazaRadius: 10.6,
+} as const;
+
+export const EXTRA_DRIVABLE_ZONES = [
+  // Kerala Airport Concrete Apron & Terminal Drop-off
+  { minX: -54, maxX: 54, minZ: -137, maxZ: -116 },
+  // Hospital Emergency Porch & Bay
+  { minX: 50, maxX: 76, minZ: -41, maxZ: -26 },
+  // Sheru Home & Resort Front Driveways
+  { minX: -36, maxX: 62, minZ: 28, maxZ: 42 },
+  // Main Junction Car Showroom & Mall Parking Bays
+  { minX: -56, maxX: 56, minZ: -12, maxZ: 4 },
+  { minX: -22, maxX: 22, minZ: 6, maxZ: 22 },
+  // Police & Fire Station Aprons
+  { minX: -72, maxX: -50, minZ: -40, maxZ: -24 },
+  { minX: 46, maxX: 74, minZ: 24, maxZ: 42 },
+] as const;
+
+/**
+ * Returns true ONLY when (x, z) is on a paved road, roundabout plaza, beach parking blvd,
+ * or designated parking/apron driveway — enforcing "no vehicles off-road"!
+ */
+export function isPointOnDrivablePavement(x: number, z: number, margin = 0.6): boolean {
+  // Main Junction Golden Statue Roundabout Plaza (strictly outside pedestal!)
+  const distStatue = Math.hypot(x - SHERU_STATUE_ROUNDABOUT.x, z - SHERU_STATUE_ROUNDABOUT.z);
+  if (distStatue <= SHERU_STATUE_ROUNDABOUT.plazaRadius + margin) {
+    return true;
+  }
+
+  for (const road of TOWN_ROADS) {
+    const b = getRoadBounds(road);
+    if (
+      x >= b.minX - margin &&
+      x <= b.maxX + margin &&
+      z >= b.minZ - margin &&
+      z <= b.maxZ + margin
+    ) {
+      return true;
+    }
+  }
+
+  for (const road of AUX_PAVED_ROADS) {
+    const b = getRoadBounds(road);
+    if (
+      x >= b.minX - margin &&
+      x <= b.maxX + margin &&
+      z >= b.minZ - margin &&
+      z <= b.maxZ + margin
+    ) {
+      return true;
+    }
+  }
+
+  for (const zone of EXTRA_DRIVABLE_ZONES) {
+    if (
+      x >= zone.minX - margin &&
+      x <= zone.maxX + margin &&
+      z >= zone.minZ - margin &&
+      z <= zone.maxZ + margin
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Finds the closest paved road coordinate to (x, z) so spawned or displaced ground vehicles
+ * ALWAYS sit neatly on asphalt rather than grass or beach sand.
+ */
+export function snapPointToNearestRoad(x: number, z: number): { x: number; z: number } {
+  if (isPointOnDrivablePavement(x, z, 0)) {
+    return { x, z };
+  }
+  let bestX = 3.2;
+  let bestZ = 0;
+  let bestDistSq = Infinity;
+  const allRoads = [...TOWN_ROADS, ...AUX_PAVED_ROADS];
+  for (const road of allRoads) {
+    const b = getRoadBounds(road);
+    const cx = Math.max(b.minX + 1.2, Math.min(b.maxX - 1.2, x));
+    const cz = Math.max(b.minZ + 1.2, Math.min(b.maxZ - 1.2, z));
+    const d2 = (cx - x) * (cx - x) + (cz - z) * (cz - z);
+    if (d2 < bestDistSq) {
+      bestDistSq = d2;
+      bestX = cx;
+      bestZ = cz;
+    }
+  }
+  return { x: bestX, z: bestZ };
+}
+
+/**
+ * Road-only containment for ground vehicles ("no vehicles in road allatha sthalath pokan padillah"):
+ * Allows smooth curb-sliding along the road edge while blocking off-road excursions into grass/sand.
+ */
+export function constrainVehicleToDrivableRoads(
+  prevX: number,
+  prevZ: number,
+  nextX: number,
+  nextZ: number,
+): { x: number; z: number; hitCurb: boolean } {
+  if (isPointOnDrivablePavement(nextX, nextZ, 0.35)) {
+    return { x: nextX, z: nextZ, hitCurb: false };
+  }
+  // Try axis-separated curb slide so turning near a curb feels buttery smooth!
+  const slideXOk = isPointOnDrivablePavement(nextX, prevZ, 0.35);
+  const slideZOk = isPointOnDrivablePavement(prevX, nextZ, 0.35);
+  if (slideXOk) return { x: nextX, z: prevZ, hitCurb: true };
+  if (slideZOk) return { x: prevX, z: nextZ, hitCurb: true };
+
+  // If somehow already slightly outside pavement, pull smoothly back onto nearest road
+  if (!isPointOnDrivablePavement(prevX, prevZ, 0.6)) {
+    const snapped = snapPointToNearestRoad(nextX, nextZ);
+    return { x: snapped.x, z: snapped.z, hitCurb: true };
+  }
+  return { x: prevX, z: prevZ, hitCurb: true };
+}
+
+/**
+ * Computes a clean road-following steering target for Auto-Destination driving that:
+ * 1) Uses proper ±3.0m road lanes instead of centerline (x=0, z=-4)
+ * 2) Smoothly orbits the Golden Sheru Bhai Statue Roundabout (0, -4) at radius 6.2m — NEVER hits the statue!
+ */
+export function computeRoadAutopilotTarget(
+  vehX: number,
+  vehZ: number,
+  destX: number,
+  destZ: number,
+): { targetX: number; targetZ: number; roundingStatue: boolean } {
+  const roadZs = [-122, -72, -32, -4, 34, 72, 104, 165.5];
+  let destRoadZ = -4;
+  let bestRoadDist = Infinity;
+  for (const rz of roadZs) {
+    const d = Math.abs(destZ - rz);
+    if (d < bestRoadDist) {
+      bestRoadDist = d;
+      destRoadZ = rz;
+    }
+  }
+
+  const dist = Math.hypot(destX - vehX, destZ - vehZ);
+  let targetX = destX;
+  let targetZ = destZ;
+
+  const onDestRoad = Math.abs(vehZ - destRoadZ) < 8;
+  const nearCenterAve = Math.abs(vehX) < 8;
+  if (!onDestRoad && dist > 16) {
+    if (!nearCenterAve) {
+      let curRoadZ = -4;
+      let bestCur = Infinity;
+      for (const rz of roadZs) {
+        const d = Math.abs(vehZ - rz);
+        if (d < bestCur) {
+          bestCur = d;
+          curRoadZ = rz;
+        }
+      }
+      // Proper lane offset heading toward Main Junction Avenue (avoiding z=-4 center!)
+      const goingEast = vehX < 0;
+      targetX = goingEast ? -3.1 : 3.1;
+      targetZ = curRoadZ + (goingEast ? 2.6 : -2.6);
+    } else {
+      // Proper lane offset along Main Junction Avenue (NEVER x = 0 through the statue!)
+      const goingSouth = destRoadZ > vehZ;
+      targetX = goingSouth ? -3.1 : 3.1;
+      targetZ = destRoadZ;
+    }
+  } else if (onDestRoad && dist > 14 && Math.abs(destRoadZ - -4) < 2) {
+    // Keep proper lane along Central Bazaar Road (z = -4)
+    const goingEast = destX > vehX;
+    targetZ = -4 + (goingEast ? 3.0 : -3.0);
+  }
+
+  // Sheru Statue Roundabout Avoidance Guard:
+  // If vehicle is near (0, -4) OR straight segment to target passes within 5.0m of statue center,
+  // steer smoothly around the roundabout orbit (radius 6.4m) counter-clockwise!
+  const sx = SHERU_STATUE_ROUNDABOUT.x;
+  const sz = SHERU_STATUE_ROUNDABOUT.z;
+  const toSegX = targetX - vehX;
+  const toSegZ = targetZ - vehZ;
+  const segLenSq = toSegX * toSegX + toSegZ * toSegZ;
+  let closestDistToStatue = Math.hypot(vehX - sx, vehZ - sz);
+  if (segLenSq > 0.01) {
+    const t = Math.max(0, Math.min(1, ((sx - vehX) * toSegX + (sz - vehZ) * toSegZ) / segLenSq));
+    const cx = vehX + toSegX * t;
+    const cz = vehZ + toSegZ * t;
+    closestDistToStatue = Math.hypot(cx - sx, cz - sz);
+  }
+
+  const distNow = Math.hypot(vehX - sx, vehZ - sz);
+  if (distNow < 13.5 && closestDistToStatue < 5.2) {
+    // Steer tangentially along the 6.6m roundabout orbit circle around the Golden Statue!
+    const angleFromStatue = Math.atan2(vehX - sx, vehZ - sz);
+    const orbitStep = 0.65; // ~37° ahead counter-clockwise along roundabout
+    const nextAngle = angleFromStatue + orbitStep;
+    const orbitR = 6.6;
+    return {
+      targetX: sx + Math.sin(nextAngle) * orbitR,
+      targetZ: sz + Math.cos(nextAngle) * orbitR,
+      roundingStatue: true,
+    };
+  }
+
+  return { targetX, targetZ, roundingStatue: false };
+}
+
+export interface SirenSource {
+  x: number;
+  z: number;
+  yaw: number;
+}
+
+export interface SirenYieldResult {
+  yielding: boolean;
+  pullOverX: number;
+  pullOverZ: number;
+  speedScale: number;
+  hazardFlash: boolean;
+}
+
+/**
+ * Siren Emergency Yield Physics ("siren vehicles varumbol all vehicles side kodukkanam"):
+ * When ANY active siren vehicle (108 Ambulance, Police Jeep, Fire Engine) approaches within 44m,
+ * every non-emergency road vehicle pulls over laterally toward the outer road shoulder/curb
+ * and slows to a stop so the center emergency lane stays wide open!
+ */
+export function computeSirenYieldBehavior(
+  aiX: number,
+  aiZ: number,
+  aiYaw: number,
+  sirenSources: SirenSource[],
+): SirenYieldResult {
+  if (sirenSources.length === 0) {
+    return { yielding: false, pullOverX: 0, pullOverZ: 0, speedScale: 1, hazardFlash: false };
+  }
+
+  let nearest: SirenSource | null = null;
+  let bestDist = Infinity;
+  for (const s of sirenSources) {
+    const d = Math.hypot(s.x - aiX, s.z - aiZ);
+    if (d < bestDist) {
+      bestDist = d;
+      nearest = s;
+    }
+  }
+
+  if (!nearest || bestDist > 44) {
+    return { yielding: false, pullOverX: 0, pullOverZ: 0, speedScale: 1, hazardFlash: false };
+  }
+
+  // Vehicle right/left perpendicular vector (pull strictly toward the outer curb away from road centerline!)
+  const fwdX = Math.sin(aiYaw);
+  const fwdZ = Math.cos(aiYaw);
+  // Left shoulder vector (Indian left-hand traffic standard: pull to the left curb!)
+  let sideX = fwdZ;
+  let sideZ = -fwdX;
+
+  // Verify which side pushes AWAY from the approaching siren vehicle so we never steer into it!
+  const awayX = aiX - nearest.x;
+  const awayZ = aiZ - nearest.z;
+  const dot = sideX * awayX + sideZ * awayZ;
+  if (dot < -0.25) {
+    sideX = -sideX;
+    sideZ = -sideZ;
+  }
+
+  // Stronger pull-over & full stop as siren closes within 28m
+  const urgency = Math.max(0.25, Math.min(1, (44 - bestDist) / 22));
+  const pullMag = 2.6 * urgency;
+  const speedScale = bestDist < 24 ? 0.0 : bestDist < 34 ? 0.12 : 0.32;
+
+  return {
+    yielding: true,
+    pullOverX: sideX * pullMag,
+    pullOverZ: sideZ * pullMag,
+    speedScale,
+    hazardFlash: true,
+  };
+}
+
+/**
  * Curated interactive Kerala Coconut Palms positioned strictly on sidewalks & lawns
  * (>= 2.8m clear of every road edge and clear of all buildings & Airport corridor).
  */

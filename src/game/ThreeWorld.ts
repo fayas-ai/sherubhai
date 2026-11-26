@@ -89,7 +89,7 @@ import {
 } from './models';
 import {
   AIRPORT_RUNWAY,
-  evaluateAirplaneLanding,
+  evaluateAirplaneHazard,
   isAircraftType,
   isPointOnAirportTarmac,
   mapMobileFlightCursor,
@@ -98,8 +98,14 @@ import {
 import {
   PhysicsDynamicActor,
   RigidBodyProp,
+  SolidCircle,
+  SolidOBB,
   WORLD_RAMPS,
   createOpenWorldProps,
+  distanceToVehicleHull,
+  findSafeVehicleExitPoint,
+  pushVehicleSolidOBBs,
+  resolveCharacterSolidBodies,
   resolveVehiclePairCollision,
   sampleWorldSurface,
   stepCharacterPhysics,
@@ -112,11 +118,19 @@ import {
   createStuntRampMesh,
 } from './physicsPropModels';
 import {
+  AUX_PAVED_ROADS,
+  SHERU_STATUE_ROUNDABOUT,
+  SirenSource,
   TOWN_CROWD_ROUTES,
   TOWN_PALM_TREES,
   TOWN_ROADS,
   TOWN_TRAFFIC_ROUTES,
+  computeRoadAutopilotTarget,
+  computeSirenYieldBehavior,
+  constrainVehicleToDrivableRoads,
+  getRoadBounds,
   getRoadNameAt,
+  snapPointToNearestRoad,
 } from './roadNetwork';
 import { VehicleModelRig, createDetailedVehicleModel } from './vehicleModels';
 import {
@@ -124,13 +138,19 @@ import {
   createPlasterBumpTexture,
   createRoadTexture,
   createSignboardTexture,
+  createStreetPuddleTexture,
 } from './textures';
 import {
+  StreetPuddleSpec,
   WeatherControllerState,
   buildWeatherHudState,
   createInitialWeatherState,
   cycleWeatherCondition,
+  generateStreetPuddleSpecs,
+  getEffectiveFogRange,
+  getPuddleVisibility,
   getWeatherVisualConfig,
+  isPointInActivePuddle,
   stepWeatherCycle,
 } from './weatherLogic';
 import {
@@ -169,6 +189,7 @@ import {
   RAILWAY_STATIONS,
   RailwaySimulationState,
   TRAIN_DEFS,
+  TrackObstacle,
   alightFromTrain,
   boardStoppedTrain,
   buildRailwayHudState,
@@ -201,16 +222,27 @@ const _mat4 = new THREE.Matrix4();
 const _quat = new THREE.Quaternion();
 const _euler = new THREE.Euler();
 const _scale = new THREE.Vector3();
-const _skyDay = new THREE.Color(0x88ccf1);
-const _skySunset = new THREE.Color(0xf29f67);
-const _skyNight = new THREE.Color(0x111a2c);
-const _skyTopDay = new THREE.Color(0x1c6ed5);
-const _skyTopSunset = new THREE.Color(0x3a2d6b);
-const _skyTopNight = new THREE.Color(0x060b18);
+const _skyDay = new THREE.Color(0xc2dcf0);
+const _skySunset = new THREE.Color(0xe6955e);
+const _skyNight = new THREE.Color(0x101a2b);
+const _skyTopDay = new THREE.Color(0x3a76b8);
+const _skyTopSunset = new THREE.Color(0x3b3564);
+const _skyTopNight = new THREE.Color(0x050a14);
 const _skyTopWork = new THREE.Color();
 const _skyWork = new THREE.Color();
 const _weatherSky = new THREE.Color();
+const _weatherFog = new THREE.Color();
+const _roadTintTarget = new THREE.Color();
+const _puddleTint = new THREE.Color();
 const _sunDirWork = new THREE.Vector3();
+
+function freezeStaticHierarchy(obj: THREE.Object3D): void {
+  obj.updateMatrixWorld(true);
+  obj.traverse((child) => {
+    child.matrixAutoUpdate = false;
+    child.updateMatrix();
+  });
+}
 
 interface ParticleSlot {
   active: boolean;
@@ -483,6 +515,8 @@ export class ThreeWorld {
 
   // World entities
   private colliders: AABB[] = [];
+  private solidObbsScratch: SolidOBB[] = [];
+  private solidCirclesScratch: SolidCircle[] = [];
   private buildingHandles = new Map<string, BuildingMeshHandle>();
   private plotMeshes = new Map<string, THREE.Group>();
   private builtShopAnimations: { mesh: THREE.Group; progress: number }[] = [];
@@ -581,6 +615,17 @@ export class ThreeWorld {
   private rainLines: THREE.LineSegments | null = null;
   private rainMat: THREE.LineBasicMaterial | null = null;
   private rainOffsets: Float32Array | null = null;
+  private readonly rainMaxDrops = 760;
+  private puddleSpecs: StreetPuddleSpec[] = [];
+  private puddleMesh: THREE.InstancedMesh | null = null;
+  private puddleMat: THREE.MeshStandardMaterial | null = null;
+  private puddleVisualLevels: Float32Array | null = null;
+  private puddleRippleMesh: THREE.InstancedMesh | null = null;
+  private puddleRippleMat: THREE.MeshBasicMaterial | null = null;
+  private wetRoadMaterials: THREE.MeshStandardMaterial[] = [];
+  private monsoonThunderTimer = 5.5;
+  private lightningFlash = 0;
+  private lastMonsoonLampBoost = false;
   private elapsed = 0;
   private lastTickTime = 0;
   private hudThrottle = 0;
@@ -609,6 +654,9 @@ export class ThreeWorld {
   private trainRigs: KeralaTrainRig[] = [];
   private stationPassengerRigs: Map<string, TownPedestrianRig> = new Map();
   private trainDriverCabView = true;
+  // Zero-GC per-frame scratch arrays for siren-yield & railway obstacle detection
+  private sirenSourcesScratch: SirenSource[] = [];
+  private trackObstaclesScratch: TrackObstacle[] = [];
 
   constructor(
     container: HTMLElement,
@@ -636,7 +684,7 @@ export class ThreeWorld {
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.02;
 
     const initW = container.clientWidth || window.innerWidth;
     const initH = container.clientHeight || window.innerHeight;
@@ -694,13 +742,13 @@ export class ThreeWorld {
     );
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x88ccf1);
-    this.scene.fog = new THREE.Fog(0x88ccf1, 68, 180);
+    this.scene.background = new THREE.Color(0xc2dcf0);
+    this.scene.fog = new THREE.Fog(0xc2dcf0, 68, 180);
 
-    // Studio RoomEnvironment reflections tuned to realistic outdoor IBL intensity
+    // Studio RoomEnvironment reflections tuned to grounded outdoor Kerala IBL intensity
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.72;
+    this.scene.environmentIntensity = 0.62;
     pmrem.dispose();
 
     // Single-draw-call realistic gradient sky dome + glowing sun halo
@@ -714,11 +762,11 @@ export class ThreeWorld {
       260,
     );
 
-    // Warm/cool 3-point outdoor lighting rig (Hemisphere + Key Sun with tight player-following shadows + Cool Rim Fill)
-    this.hemiLight = new THREE.HemisphereLight(0xb2ddff, 0x6b5d42, 0.86);
+    // Natural warm/cool 3-point outdoor lighting rig (Sky-Laterite Hemisphere + Warm Key Sun + Soft Cool Rim)
+    this.hemiLight = new THREE.HemisphereLight(0xb8d8f0, 0x6c5e47, 0.80);
     this.scene.add(this.hemiLight);
 
-    this.sunLight = new THREE.DirectionalLight(0xfff1d6, 1.95);
+    this.sunLight = new THREE.DirectionalLight(0xfff3de, 1.78);
     this.sunLight.position.set(42, 68, 36);
     this.sunLight.castShadow = this.perfBudget.shadowsEnabled;
     this.sunLight.shadow.mapSize.set(this.perfBudget.shadowMapSize, this.perfBudget.shadowMapSize);
@@ -734,13 +782,14 @@ export class ThreeWorld {
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    // Subtle cool sky rim/fill light opposite the sun (zero shadow cost, crisp 3D depth separation!)
-    this.rimLight = new THREE.DirectionalLight(0x9ad1ff, 0.52);
+    // Soft cool sky rim/fill light opposite the sun (zero shadow cost, natural 3D volume separation)
+    this.rimLight = new THREE.DirectionalLight(0x9bc2e4, 0.38);
     this.rimLight.position.set(-48, 32, -40);
     this.scene.add(this.rimLight);
 
-    // Lightweight single-draw-call 3D Monsoon Rain streaks (visible only when weather === 'rain')
+    // Lightweight single-draw-call 3D Rain & Heavy Monsoon streaks + Instanced Reflective Street Puddles
     this.initRainSystem();
+    this.initStreetPuddles();
 
     // Build Kerala World Geometry
     this.buildEnvironment(initialProgress);
@@ -890,10 +939,10 @@ export class ThreeWorld {
   }
 
   private buildEnvironment(initialProgress: GameProgressState) {
-    // Extended Kerala lush ground plane + distant tropical backwaters ring (no floating void wall!)
+    // Extended Kerala lush ground plane ending cleanly at Malabar Golden Beach (z = +162) so ZERO grass bleeds onto golden sand or Arabian Sea!
     const grassTex = createGrassTexture(this.maxAnisotropy);
     const ground = new THREE.Mesh(
-      new THREE.CircleGeometry(WORLD_RADIUS + 48, 48),
+      new THREE.PlaneGeometry(540, 424),
       new THREE.MeshStandardMaterial({
         color: 0xffffff,
         map: grassTex,
@@ -902,7 +951,9 @@ export class ThreeWorld {
       }),
     );
     ground.rotation.x = -Math.PI / 2;
+    ground.position.set(0, 0, -50); // spans z = -262 (Western Ghats) .. +162 (Malabar Beachfront Blvd)
     ground.receiveShadow = true;
+    freezeStaticHierarchy(ground);
     this.scene.add(ground);
 
     // Distant coastal backwater sea horizon replaced by real animated Arabian Sea (South) & Western Ghats Mountains (N/E/W)!
@@ -910,14 +961,17 @@ export class ThreeWorld {
     this.scene.add(this.seaRig.group);
 
     const mountains = createWesternGhatsMountains();
+    freezeStaticHierarchy(mountains);
     this.scene.add(mountains);
 
     // Double-Track Kerala Railway Loop, 4 Named Stations with Foot-Overbridges, 4 Trains & 40 Live Station Passengers!
     const railwayTrackMesh = createDoubleTrackRailwayMesh();
+    freezeStaticHierarchy(railwayTrackMesh);
     this.scene.add(railwayTrackMesh);
 
     for (const st of RAILWAY_STATIONS) {
       const stationMesh = createRailwayStationModel(st);
+      freezeStaticHierarchy(stationMesh);
       this.scene.add(stationMesh);
     }
 
@@ -944,50 +998,148 @@ export class ThreeWorld {
     this.airportRig = createAirportComplexModel(this.maxAnisotropy);
     this.scene.add(this.airportRig.group);
 
-    // All 11 Paved Town Roads generated cleanly from TOWN_ROADS (zero shop/tree overlap!)
-    const roadTexNS = createRoadTexture(this.maxAnisotropy);
-    roadTexNS.repeat.set(1, 22);
+    // All Paved Town Roads + Coastal Beach & Station Connectors:
+    // ZERO-LAG: 1 single shared 512x512 road texture + 2 shared materials (NS & EW) with per-mesh UV scaling!
+    const allPavedRoads = [...TOWN_ROADS, ...AUX_PAVED_ROADS];
+    const baseRoadTex = createRoadTexture(this.maxAnisotropy);
     const roadMatNS = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      map: roadTexNS,
-      roughness: 0.82,
+      map: baseRoadTex,
+      roughness: 0.85,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-
-    const roadTexEW = createRoadTexture(this.maxAnisotropy);
-    roadTexEW.repeat.set(1, 24);
     const roadMatEW = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      map: roadTexEW,
-      roughness: 0.82,
+      map: baseRoadTex,
+      roughness: 0.85,
       polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
     });
 
-    for (const seg of TOWN_ROADS) {
-      const roadMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(seg.width, seg.length),
-        seg.axis === 'ns' ? roadMatNS : roadMatEW,
-      );
+    const staticRoadsGroup = new THREE.Group();
+    for (const seg of allPavedRoads) {
+      const roadGeo = new THREE.PlaneGeometry(seg.width, seg.length);
+      const repY = Math.max(3, Math.round(seg.length / 10));
+      const uvAttr = roadGeo.attributes.uv as THREE.BufferAttribute;
+      for (let i = 0; i < uvAttr.count; i++) {
+        uvAttr.setY(i, uvAttr.getY(i) * repY);
+      }
+      uvAttr.needsUpdate = true;
+
+      const roadMesh = new THREE.Mesh(roadGeo, seg.axis === 'ew' ? roadMatEW : roadMatNS);
       roadMesh.rotation.x = -Math.PI / 2;
       if (seg.axis === 'ew') roadMesh.rotation.z = Math.PI / 2;
       roadMesh.position.set(seg.x, seg.yOffset, seg.z);
       roadMesh.receiveShadow = true;
-      this.scene.add(roadMesh);
+      staticRoadsGroup.add(roadMesh);
     }
 
-    // Central Town Junction Plaza Circle
+    // Crisp Asphalt Intersection Junction Aprons at EVERY NS × EW crossing (eliminates broken overlapping dashed lines!)
+    const junctionAsphaltMat = new THREE.MeshStandardMaterial({
+      color: 0x363b42,
+      roughness: 0.87,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    });
+    const nsRoads = allPavedRoads.filter((r) => r.axis === 'ns');
+    const ewRoads = allPavedRoads.filter((r) => r.axis === 'ew');
+    for (const ns of nsRoads) {
+      const bNS = getRoadBounds(ns);
+      for (const ew of ewRoads) {
+        const bEW = getRoadBounds(ew);
+        const ix = ns.x;
+        const iz = ew.z;
+        if (ix >= bEW.minX - 1 && ix <= bEW.maxX + 1 && iz >= bNS.minZ - 1 && iz <= bNS.maxZ + 1) {
+          const pad = new THREE.Mesh(
+            new THREE.PlaneGeometry(ns.width + 0.6, ew.width + 0.6),
+            junctionAsphaltMat,
+          );
+          pad.rotation.x = -Math.PI / 2;
+          pad.position.set(ix, 0.039, iz);
+          pad.receiveShadow = true;
+          staticRoadsGroup.add(pad);
+        }
+      }
+    }
+
+    // Clean Railway Level Crossing Decks & Warning Beacons at West (-46, 134) & East (+46, 134) Beach Access Roads
+    const crossingMat = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.82 });
+    const gatePostMat = new THREE.MeshStandardMaterial({ color: 0xdcb32c, roughness: 0.56 });
+    const gateStripeMat = new THREE.MeshStandardMaterial({ color: 0x161b22, roughness: 0.64 });
+    const beaconMat = new THREE.MeshStandardMaterial({
+      color: 0xd93830,
+      emissive: 0xd93830,
+      emissiveIntensity: 1.0,
+    });
+    const gatePostGeo = new THREE.CylinderGeometry(0.14, 0.16, 2.8, 8);
+    const gateBandGeo = new THREE.CylinderGeometry(0.155, 0.155, 0.45, 8);
+    const gateLampGeo = new THREE.SphereGeometry(0.22, 8, 8);
+    const crossingDeckGeo = new THREE.BoxGeometry(10.6, 0.19, 8.6);
+    for (const cx of [-46, 46]) {
+      const crossingDeck = new THREE.Mesh(crossingDeckGeo, crossingMat);
+      crossingDeck.position.set(cx, 0.1, 134);
+      crossingDeck.receiveShadow = true;
+      staticRoadsGroup.add(crossingDeck);
+      for (const [gx, gz] of [
+        [cx - 5.9, 129.2],
+        [cx + 5.9, 129.2],
+        [cx - 5.9, 138.8],
+        [cx + 5.9, 138.8],
+      ] as [number, number][]) {
+        const post = new THREE.Mesh(gatePostGeo, gatePostMat);
+        post.position.set(gx, 1.4, gz);
+        const band = new THREE.Mesh(gateBandGeo, gateStripeMat);
+        band.position.set(gx, 1.7, gz);
+        const lamp = new THREE.Mesh(gateLampGeo, beaconMat);
+        lamp.position.set(gx, 2.95, gz);
+        staticRoadsGroup.add(post, band, lamp);
+      }
+    }
+
+    // Central Town Junction Roundabout Plaza & Painted Outer Ring around Golden Sheru Statue (0, -4)
+    const plazaMat = new THREE.MeshStandardMaterial({
+      color: 0x363b42,
+      roughness: 0.86,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    });
     const plaza = new THREE.Mesh(
-      new THREE.CircleGeometry(10.5, 28),
-      new THREE.MeshStandardMaterial({ color: 0x454c54, roughness: 0.84 }),
+      new THREE.CircleGeometry(SHERU_STATUE_ROUNDABOUT.plazaRadius, 32),
+      plazaMat,
     );
     plaza.rotation.x = -Math.PI / 2;
-    plaza.position.set(0, 0.04, -4);
+    plaza.position.set(SHERU_STATUE_ROUNDABOUT.x, 0.044, SHERU_STATUE_ROUNDABOUT.z);
     plaza.receiveShadow = true;
-    this.scene.add(plaza);
+    staticRoadsGroup.add(plaza);
+    this.wetRoadMaterials = [roadMatNS, roadMatEW, junctionAsphaltMat, plazaMat];
+    freezeStaticHierarchy(staticRoadsGroup);
+    this.scene.add(staticRoadsGroup);
+
+    const roundaboutLaneRing = new THREE.Mesh(
+      new THREE.RingGeometry(SHERU_STATUE_ROUNDABOUT.orbitRadius - 0.18, SHERU_STATUE_ROUNDABOUT.orbitRadius + 0.18, 40),
+      new THREE.MeshBasicMaterial({
+        color: 0xfde047,
+        polygonOffset: true,
+        polygonOffsetFactor: -5,
+        polygonOffsetUnits: -5,
+      }),
+    );
+    roundaboutLaneRing.rotation.x = -Math.PI / 2;
+    roundaboutLaneRing.position.set(SHERU_STATUE_ROUNDABOUT.x, 0.056, SHERU_STATUE_ROUNDABOUT.z);
+    this.scene.add(roundaboutLaneRing);
+
+    const islandCurb = new THREE.Mesh(
+      new THREE.TorusGeometry(SHERU_STATUE_ROUNDABOUT.pedestalRadius + 0.25, 0.18, 8, 32),
+      new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.55 }),
+    );
+    islandCurb.rotation.x = Math.PI / 2;
+    islandCurb.position.set(SHERU_STATUE_ROUNDABOUT.x, 0.16, SHERU_STATUE_ROUNDABOUT.z);
+    this.scene.add(islandCurb);
 
     // Iconic 24K Golden Sheru Bhai Lion-King Statue Monument at Main Junction center (0, -4)
     this.goldenStatueRig = createGoldenJunctionStatue(this.maxAnisotropy);
@@ -1885,9 +2037,10 @@ export class ThreeWorld {
       ? AIRPORT_RUNWAY.takeoffStartZ
       : this.playerZ + Math.cos(this.playerYaw) * 2.2;
     const spawnYaw = aircraft ? AIRPORT_RUNWAY.takeoffYaw : this.playerYaw;
-    const safe = aircraft
+    const safeRaw = aircraft
       ? { x: spawnX, z: spawnZ }
       : resolveCircleWorldCollision(spawnX, spawnZ, 1.8, this.colliders);
+    const safe = aircraft ? safeRaw : snapPointToNearestRoad(safeRaw.x, safeRaw.z);
 
     if (!existing) {
       const spawnDef: VehicleDef = {
@@ -2018,12 +2171,13 @@ export class ThreeWorld {
     this.sheru.root.visible = true;
 
     if (spotId === 'beach') {
-      this.playerX = -4;
-      this.playerY = 0.14;
-      this.playerZ = 172;
-      this.playerYaw = 0; // Facing South straight out at the shimmering Arabian Sea!
+      // Spawn cleanly on the sunlit promenade right beside Sea Bench #3 (-12, 173.4) with unobstructed ocean vista!
+      this.playerX = -11.5;
+      this.playerY = 0.16;
+      this.playerZ = 172.2;
+      this.playerYaw = 0; // Facing South straight out at the golden beach & turquoise Arabian Sea!
       this.camYaw = 0;
-      this.camPitch = 0.2;
+      this.camPitch = 0.16;
     } else {
       const st = RAILWAY_STATIONS.find((s) => s.id === spotId) ?? RAILWAY_STATIONS[0];
       const pfPos = stationLocalToWorld(st, -4, -PLATFORM_CENTER_OFFSET);
@@ -2625,21 +2779,21 @@ export class ThreeWorld {
   }
 
   private initRainSystem() {
-    const dropCount = 220;
+    const dropCount = this.rainMaxDrops;
     const positions = new Float32Array(dropCount * 6);
     const offsets = new Float32Array(dropCount * 3);
     for (let i = 0; i < dropCount; i++) {
-      const rx = (Math.random() - 0.5) * 56;
-      const ry = Math.random() * 24;
-      const rz = (Math.random() - 0.5) * 56;
+      const rx = (Math.random() - 0.5) * 34;
+      const ry = Math.random() * 20;
+      const rz = (Math.random() - 0.5) * 34;
       offsets[i * 3] = rx;
       offsets[i * 3 + 1] = ry;
       offsets[i * 3 + 2] = rz;
       positions[i * 6] = rx;
       positions[i * 6 + 1] = ry;
       positions[i * 6 + 2] = rz;
-      positions[i * 6 + 3] = rx - 0.14;
-      positions[i * 6 + 4] = ry - 0.88;
+      positions[i * 6 + 3] = rx - 0.2;
+      positions[i * 6 + 4] = ry - 1.1;
       positions[i * 6 + 5] = rz;
     }
     const geo = new THREE.BufferGeometry();
@@ -2657,6 +2811,81 @@ export class ThreeWorld {
     this.rainLines = lines;
     this.rainMat = mat;
     this.rainOffsets = offsets;
+  }
+
+  private initStreetPuddles() {
+    const allPavedRoads = [...TOWN_ROADS, ...AUX_PAVED_ROADS];
+    const specs = generateStreetPuddleSpecs(allPavedRoads, [
+      {
+        x: SHERU_STATUE_ROUNDABOUT.x,
+        z: SHERU_STATUE_ROUNDABOUT.z,
+        radius: SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.4,
+      },
+    ]);
+    this.puddleSpecs = specs;
+    if (specs.length === 0) return;
+
+    const puddleTex = createStreetPuddleTexture(this.maxAnisotropy);
+    const puddleGeo = new THREE.PlaneGeometry(2, 2);
+    puddleGeo.rotateX(-Math.PI / 2);
+    const puddleMat = new THREE.MeshStandardMaterial({
+      color: 0x8fb6d4,
+      map: puddleTex,
+      roughness: 0.06,
+      metalness: 0.78,
+      envMapIntensity: 1.55,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -6,
+      polygonOffsetUnits: -6,
+    });
+    const puddleMesh = new THREE.InstancedMesh(puddleGeo, puddleMat, specs.length);
+    puddleMesh.frustumCulled = false;
+    puddleMesh.visible = false;
+    puddleMesh.renderOrder = 2;
+
+    const levels = new Float32Array(specs.length);
+    _scale.set(0, 0, 0);
+    _quat.identity();
+    for (let i = 0; i < specs.length; i++) {
+      _v1.set(specs[i].x, 0.062, specs[i].z);
+      _mat4.compose(_v1, _quat, _scale);
+      puddleMesh.setMatrixAt(i, _mat4);
+    }
+    puddleMesh.instanceMatrix.needsUpdate = true;
+    this.scene.add(puddleMesh);
+    this.puddleMesh = puddleMesh;
+    this.puddleMat = puddleMat;
+    this.puddleVisualLevels = levels;
+
+    // Pooled raindrop ripple rings across visible monsoon street puddles (1 draw call!)
+    const rippleCount = 28;
+    const rippleGeo = new THREE.RingGeometry(0.16, 0.23, 18);
+    rippleGeo.rotateX(-Math.PI / 2);
+    const rippleMat = new THREE.MeshBasicMaterial({
+      color: 0xdbeafe,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -7,
+      polygonOffsetUnits: -7,
+    });
+    const rippleMesh = new THREE.InstancedMesh(rippleGeo, rippleMat, rippleCount);
+    rippleMesh.frustumCulled = false;
+    rippleMesh.visible = false;
+    rippleMesh.renderOrder = 3;
+    for (let i = 0; i < rippleCount; i++) {
+      _v1.set(0, -10, 0);
+      _mat4.compose(_v1, _quat, _scale);
+      rippleMesh.setMatrixAt(i, _mat4);
+    }
+    rippleMesh.instanceMatrix.needsUpdate = true;
+    this.scene.add(rippleMesh);
+    this.puddleRippleMesh = rippleMesh;
+    this.puddleRippleMat = rippleMat;
   }
 
   public triggerCelebration(kind: 'celebrate' | 'flex' | 'laugh' = 'celebrate') {
@@ -2748,8 +2977,13 @@ export class ThreeWorld {
     };
   }
 
-  private triggerAirplaneCrashBlast(veh: LiveVehicle, crashX: number, crashZ: number) {
-    // BOOM!! Manual off-runway crash blast VFX + sound + Fire Engine + 108 Ambulance rescue!
+  private triggerAirplaneCrashBlast(
+    veh: LiveVehicle,
+    crashX: number,
+    crashZ: number,
+    reason: 'mountain' | 'off_airport' | 'building' = 'off_airport',
+  ) {
+    // BOOM!! Real off-airport / Western Ghats mountain crash blast VFX + sound + Fire Engine + 108 Ambulance rescue!
     soundEngine.playPlaneBlast();
     this.camShakeTrauma = 1.0;
 
@@ -2793,11 +3027,13 @@ export class ThreeWorld {
     veh.mesh.rotation.y = veh.yaw;
     if (veh.rig.bodyPivot) veh.rig.bodyPivot.rotation.set(0, 0, 0);
 
-    // Eject Sheru Bhai safely nearby facing the smoking blast & rushing rescue vehicles!
+    // Eject Sheru Bhai safely on nearby flat ground facing the smoking blast & rushing rescue vehicles!
     this.activeVehicleId = null;
     this.autopilotDest = null;
     this.sheru.root.visible = true;
-    const ejectSafe = resolveCircleWorldCollision(crashX + 5.6, crashZ + 4.8, 0.9, this.colliders);
+    const ejectTargetX = reason === 'mountain' ? THREE.MathUtils.clamp(crashX * 0.72, -165, 165) : crashX + 5.6;
+    const ejectTargetZ = reason === 'mountain' ? THREE.MathUtils.clamp(crashZ * 0.72, -165, 165) : crashZ + 4.8;
+    const ejectSafe = resolveCircleWorldCollision(ejectTargetX, ejectTargetZ, 0.9, this.colliders);
     this.playerX = ejectSafe.x;
     this.playerY = 0;
     this.playerZ = ejectSafe.z;
@@ -2809,11 +3045,16 @@ export class ThreeWorld {
     this.snapCameraImmediate();
 
     // Auto-dispatch BOTH 108 Ambulance & Kerala Fire & Rescue Engine!
-    this.dispatchEmergencyAmbulance(crashX, crashZ);
+    this.dispatchEmergencyAmbulance(this.playerX, this.playerZ);
     this.dispatchFireRescueEngine(crashX, crashZ);
 
-    const roadName = getRoadNameAt(crashX, crashZ, 4.5) ?? getDistrictAt(crashX, crashZ);
-    this.callbacks.onEmergencyIncident('airplane_crash', crashX, crashZ, roadName);
+    const crashLabel =
+      reason === 'mountain'
+        ? 'Western Ghats Mountain Ridge'
+        : reason === 'building'
+          ? 'Town Building'
+          : (getRoadNameAt(crashX, crashZ, 4.5) ?? getDistrictAt(crashX, crashZ));
+    this.callbacks.onEmergencyIncident('airplane_crash', crashX, crashZ, crashLabel);
     this.hudThrottle = 1;
   }
 
@@ -2865,13 +3106,19 @@ export class ThreeWorld {
           veh.mesh.rotation.y = veh.yaw;
           if (veh.rig.bodyPivot) veh.rig.bodyPivot.rotation.set(0, 0, 0);
         }
-        const sideOffset = veh.isAircraft ? 5.6 : 2.4;
-        const exitX = veh.x + Math.cos(veh.yaw) * sideOffset;
-        const exitZ = veh.z - Math.sin(veh.yaw) * sideOffset;
-        const safe = resolveCircleWorldCollision(exitX, exitZ, 0.85, this.colliders);
-        this.playerX = safe.x;
-        this.playerZ = safe.z;
-        this.playerY = sampleWorldSurface(safe.x, safe.z).groundY;
+        const safeExit = findSafeVehicleExitPoint(
+          veh.type,
+          veh.x,
+          veh.y,
+          veh.z,
+          veh.yaw,
+          veh.isAircraft,
+          this.colliders,
+          0.72,
+        );
+        this.playerX = safeExit.x;
+        this.playerZ = safeExit.z;
+        this.playerY = sampleWorldSurface(safeExit.x, safeExit.z).groundY;
       }
       this.sheru.root.visible = true;
       soundEngine.playInteract();
@@ -3069,9 +3316,10 @@ export class ThreeWorld {
       );
     }
 
-    // Vehicles & Flyable Aeroplanes
+    // Vehicles & Flyable Aeroplanes (measured to exact solid hull so wide wings & fuselages stay accessible!)
     for (const v of this.liveVehicles) {
-      const dist = Math.hypot(v.x - this.playerX, v.z - this.playerZ);
+      if (!v.mesh.visible) continue;
+      const dist = distanceToVehicleHull(this.playerX, this.playerZ, v.type, v.x, v.z, v.yaw);
       consider(
         {
           kind: 'vehicle',
@@ -3084,11 +3332,109 @@ export class ThreeWorld {
           x: v.x,
           z: v.z,
         },
-        v.isAircraft ? 7.2 : 4.6,
+        v.isAircraft ? 3.2 : 2.5,
       );
     }
 
     return best;
+  }
+
+  /**
+   * Populate pre-allocated solid OBB & Circle scratch buffers around (cx, cz)
+   * for zero-GC common solid-body collision against aeroplanes, vehicles,
+   * live AI traffic, 4-car Kerala trains, beach benches, and NPCs.
+   */
+  private collectSolidBodiesAround(
+    cx: number,
+    cz: number,
+    maxRange: number,
+    includeVehicles: boolean = true,
+    excludeVehicleId?: string,
+  ): void {
+    const obbs = this.solidObbsScratch;
+    const circles = this.solidCirclesScratch;
+    obbs.length = 0;
+    circles.length = 0;
+    const maxRangeSq = maxRange * maxRange;
+
+    if (includeVehicles) {
+      for (let i = 0; i < this.liveVehicles.length; i++) {
+        const v = this.liveVehicles[i];
+        if (!v.mesh.visible || v.id === excludeVehicleId) continue;
+        const dx = v.x - cx;
+        const dz = v.z - cz;
+        if (dx * dx + dz * dz > maxRangeSq) continue;
+        pushVehicleSolidOBBs(obbs, v.type, v.x, v.y, v.z, v.yaw);
+      }
+
+      for (let i = 0; i < this.aiTraffic.length; i++) {
+        const ai = this.aiTraffic[i];
+        if (!ai.active) continue;
+        const dx = ai.x - cx;
+        const dz = ai.z - cz;
+        if (dx * dx + dz * dz > maxRangeSq) continue;
+        pushVehicleSolidOBBs(obbs, ai.type, ai.x, 0, ai.z, ai.yaw);
+      }
+    }
+
+    // 4-car Kerala Express trains along both tracks
+    const trainRangeSq = (maxRange + 46) * (maxRange + 46);
+    const carSpacing = 11.1;
+    for (let t = 0; t < this.railwayState.trains.length; t++) {
+      const tr = this.railwayState.trains[t];
+      const tdx = tr.x - cx;
+      const tdz = tr.z - cz;
+      if (tdx * tdx + tdz * tdz > trainRangeSq) continue;
+      for (let carIdx = 0; carIdx < 4; carIdx++) {
+        const pt = sampleTrackPoint(tr.track, tr.distance - carIdx * carSpacing);
+        const cdx = pt.x - cx;
+        const cdz = pt.z - cz;
+        if (cdx * cdx + cdz * cdz > maxRangeSq) continue;
+        obbs.push({
+          cx: pt.x,
+          cz: pt.z,
+          halfW: 1.48,
+          halfL: 5.15,
+          yaw: pt.yaw,
+          minY: 0,
+          maxY: 3.6,
+        });
+      }
+    }
+
+    // Malabar Beach sit-able benches (skip the bench Sheru is sitting on)
+    for (let i = 0; i < BEACH_BENCHES.length; i++) {
+      const b = BEACH_BENCHES[i];
+      if (b.id === this.sittingBenchId) continue;
+      const dx = b.x - cx;
+      const dz = b.z - cz;
+      if (dx * dx + dz * dz > maxRangeSq) continue;
+      obbs.push({
+        cx: b.x,
+        cz: b.z,
+        halfW: 1.25,
+        halfL: 0.52,
+        yaw: b.facingYaw,
+        minY: 0,
+        maxY: 1.05,
+      });
+    }
+
+    // Solid NPC & Town Crowd bodies (characters cannot walk straight through people)
+    for (let i = 0; i < this.liveNpcs.length; i++) {
+      const n = this.liveNpcs[i];
+      const dx = n.x - cx;
+      const dz = n.z - cz;
+      if (dx * dx + dz * dz > maxRangeSq) continue;
+      circles.push({ cx: n.x, cz: n.z, radius: 0.44, minY: 0, maxY: 1.9 });
+    }
+    for (let i = 0; i < this.townCrowd.length; i++) {
+      const w = this.townCrowd[i];
+      const dx = w.x - cx;
+      const dz = w.z - cz;
+      if (dx * dx + dz * dz > maxRangeSq) continue;
+      circles.push({ cx: w.x, cz: w.z, radius: 0.4, minY: 0, maxY: 1.85 });
+    }
   }
 
   private bindEvents() {
@@ -3223,56 +3569,77 @@ export class ThreeWorld {
     this.sunLight.position.set(snapX + sunOffX, sunOffY, snapZ + sunOffZ);
     this.rimLight.position.set(snapX - sunOffX * 0.7, 30, snapZ - sunOffZ * 0.8);
 
-    let baseSunIntensity = 1.95;
-    let baseHemiIntensity = 0.88;
-    let baseRimIntensity = 0.52;
+    let baseSunIntensity = 1.78;
+    let baseHemiIntensity = 0.80;
+    let baseRimIntensity = 0.38;
     let targetSunGlow = 1.0;
     if (phase === 'day') {
       _skyWork.copy(_skyDay);
       _skyTopWork.copy(_skyTopDay);
-      this.sunLight.color.setHex(0xfff1d6);
-      this.rimLight.color.setHex(0x9ad1ff);
-      baseSunIntensity = 1.95;
-      baseHemiIntensity = 0.88;
-      baseRimIntensity = 0.52;
+      this.sunLight.color.setHex(0xfff3de);
+      this.rimLight.color.setHex(0x9bc2e4);
+      baseSunIntensity = 1.78;
+      baseHemiIntensity = 0.80;
+      baseRimIntensity = 0.38;
       targetSunGlow = 1.0;
     } else if (phase === 'sunset') {
       _skyWork.copy(_skySunset);
       _skyTopWork.copy(_skyTopSunset);
-      this.sunLight.color.setHex(0xff9f5a);
-      this.rimLight.color.setHex(0x8fa8e8);
-      baseSunIntensity = 1.48;
-      baseHemiIntensity = 0.64;
-      baseRimIntensity = 0.42;
-      targetSunGlow = 1.25;
+      this.sunLight.color.setHex(0xf29b5e);
+      this.rimLight.color.setHex(0x889ed6);
+      baseSunIntensity = 1.38;
+      baseHemiIntensity = 0.62;
+      baseRimIntensity = 0.34;
+      targetSunGlow = 1.18;
     } else {
       _skyWork.copy(_skyNight);
       _skyTopWork.copy(_skyTopNight);
-      this.sunLight.color.setHex(0x7aa2f7);
-      this.rimLight.color.setHex(0x3b5998);
-      baseSunIntensity = 0.54;
-      baseHemiIntensity = 0.4;
-      baseRimIntensity = 0.25;
-      targetSunGlow = 0.18;
+      this.sunLight.color.setHex(0x7aa0e8);
+      this.rimLight.color.setHex(0x3a5588);
+      baseSunIntensity = 0.52;
+      baseHemiIntensity = 0.38;
+      baseRimIntensity = 0.22;
+      targetSunGlow = 0.16;
     }
 
-    // Apply dynamic weather atmospheric tint, sun dimming, and fog density
+    // Apply dynamic weather atmospheric tint, sun dimming, monsoon thunder, and darker fog
     if (weatherCfg.skyBlend > 0) {
       _weatherSky.setHex(weatherCfg.skyHex);
       _skyWork.lerp(_weatherSky, weatherCfg.skyBlend * this.weatherState.intensity);
-      _skyTopWork.lerp(_weatherSky, weatherCfg.skyBlend * 0.78 * this.weatherState.intensity);
-      targetSunGlow *= Math.max(0.12, 1 - weatherCfg.skyBlend * 0.85);
+      _skyTopWork.lerp(_weatherSky, weatherCfg.skyBlend * 0.84 * this.weatherState.intensity);
+      targetSunGlow *= Math.max(0.06, 1 - weatherCfg.skyBlend * 0.9);
     }
-    const lightLerp = 1 - Math.exp(-3 * dt);
-    const targetSun = baseSunIntensity * weatherCfg.sunIntensityMult;
-    const targetHemi = baseHemiIntensity * weatherCfg.hemiIntensityMult;
+
+    // Subtle periodic distant Monsoon lightning flash & rumble
+    if (weatherCfg.condition === 'monsoon' && !this.inHospital && this.mode === 'playing') {
+      this.monsoonThunderTimer -= dt;
+      if (this.monsoonThunderTimer <= 0) {
+        this.monsoonThunderTimer = 9 + Math.random() * 11;
+        this.lightningFlash = 0.85;
+        soundEngine.playThunderSoft();
+      }
+    }
+    if (this.lightningFlash > 0.005) {
+      this.lightningFlash *= Math.exp(-9.5 * dt);
+    } else {
+      this.lightningFlash = 0;
+    }
+
+    const lightLerp = 1 - Math.exp(-5.2 * dt);
+    const targetSun = baseSunIntensity * weatherCfg.sunIntensityMult + this.lightningFlash * 0.85;
+    const targetHemi = baseHemiIntensity * weatherCfg.hemiIntensityMult + this.lightningFlash * 0.45;
     this.sunLight.intensity += (targetSun - this.sunLight.intensity) * lightLerp;
     this.hemiLight.intensity += (targetHemi - this.hemiLight.intensity) * lightLerp;
     this.rimLight.intensity += (baseRimIntensity * weatherCfg.hemiIntensityMult - this.rimLight.intensity) * lightLerp;
 
     (this.scene.background as THREE.Color).lerp(_skyWork, lightLerp);
     if (this.scene.fog instanceof THREE.Fog) {
-      this.scene.fog.color.copy(this.scene.background as THREE.Color);
+      _weatherFog.copy(this.scene.background as THREE.Color);
+      if (weatherCfg.condition === 'monsoon') {
+        _weatherSky.setHex(weatherCfg.fogColorHex);
+        _weatherFog.lerp(_weatherSky, 0.92 * this.weatherState.intensity);
+      }
+      this.scene.fog.color.lerp(_weatherFog, lightLerp);
       const activeVeh = this.activeVehicleId
         ? this.liveVehicles.find((v) => v.id === this.activeVehicleId)
         : null;
@@ -3282,11 +3649,28 @@ export class ThreeWorld {
         this.sittingBenchId !== null ||
         isPointOnBeachZone(this.playerX, this.playerZ);
       const lodFogFarCap = this.lodState ? this.lodState.distances.fogFarCap : weatherCfg.fogFar;
-      const scenicBoost = isScenicVista ? 430 : 320;
-      const targetFogFar = Math.max(Math.min(weatherCfg.fogFar, lodFogFarCap), weatherCfg.condition === 'mist' ? 145 : scenicBoost);
-      const targetFogNear = Math.min(weatherCfg.fogNear, targetFogFar * 0.48);
+      const { fogNear: targetFogNear, fogFar: targetFogFar } = getEffectiveFogRange(
+        weatherCfg,
+        lodFogFarCap,
+        isScenicVista,
+      );
       this.scene.fog.near += (targetFogNear - this.scene.fog.near) * lightLerp;
       this.scene.fog.far += (targetFogFar - this.scene.fog.far) * lightLerp;
+    }
+
+    // Wet asphalt sheen modulation (dry matte roads -> glossy wet streets during Rain & Monsoon)
+    if (this.wetRoadMaterials.length > 0) {
+      const targetRoughness =
+        0.85 + (weatherCfg.roadRoughness - 0.85) * this.weatherState.intensity;
+      _roadTintTarget.setHex(weatherCfg.roadTintHex);
+      for (let i = 0; i < this.wetRoadMaterials.length; i++) {
+        const rm = this.wetRoadMaterials[i];
+        rm.roughness += (targetRoughness - rm.roughness) * lightLerp;
+        if (i < 2) {
+          // Textured NS/EW asphalt roads keep white base when dry and deepen subtly when drenched
+          rm.color.lerp(_roadTintTarget, lightLerp);
+        }
+      }
     }
 
     // Update sky dome shader uniforms (position & radius are locked to camera in updateCamera so it NEVER clips!)
@@ -3294,7 +3678,7 @@ export class ThreeWorld {
     this.skyDome.uniforms.uTopColor.value.lerp(_skyTopWork, lightLerp);
     this.skyDome.uniforms.uBottomColor.value
       .copy(this.scene.background as THREE.Color)
-      .multiplyScalar(0.72);
+      .multiplyScalar(weatherCfg.condition === 'monsoon' ? 0.54 : 0.72);
     _sunDirWork.set(sunOffX, sunOffY, sunOffZ).normalize();
     this.skyDome.uniforms.uSunDir.value.copy(_sunDirWork);
     this.skyDome.uniforms.uSunColor.value.copy(this.sunLight.color);
@@ -3303,57 +3687,185 @@ export class ThreeWorld {
 
     // Animate shimmering Arabian Sea waves & bobbing fishing boats!
     if (this.seaRig) {
-      this.seaRig.seaUniforms.uTime.value = this.elapsed;
+      const stormChop = 1 + weatherCfg.stormDarkness * 0.65;
+      this.seaRig.seaUniforms.uTime.value = this.elapsed * stormChop;
       this.seaRig.seaUniforms.uSunColor.value.copy(this.sunLight.color);
       this.seaRig.seaUniforms.uSkyHorizon.value.copy(this.scene.background as THREE.Color);
-      this.seaRig.seaUniforms.uNightFactor.value = phase === 'night' ? 0.9 : phase === 'sunset' ? 0.35 : 0;
+      const baseSeaDark = phase === 'night' ? 0.9 : phase === 'sunset' ? 0.35 : 0;
+      this.seaRig.seaUniforms.uNightFactor.value = Math.min(
+        0.95,
+        Math.max(baseSeaDark, weatherCfg.stormDarkness * 0.42 * this.weatherState.intensity),
+      );
       for (const b of this.seaRig.boats) {
-        b.mesh.position.y = Math.sin(this.elapsed * 1.9 + b.phase) * 0.18;
-        b.mesh.rotation.z = Math.sin(this.elapsed * 1.5 + b.phase) * 0.08;
-        b.mesh.rotation.x = Math.cos(this.elapsed * 1.3 + b.phase) * 0.05;
+        b.mesh.position.y = Math.sin(this.elapsed * 1.9 * stormChop + b.phase) * (0.18 * stormChop);
+        b.mesh.rotation.z = Math.sin(this.elapsed * 1.5 * stormChop + b.phase) * (0.08 * stormChop);
+        b.mesh.rotation.x = Math.cos(this.elapsed * 1.3 * stormChop + b.phase) * (0.05 * stormChop);
+      }
+      for (const g of this.seaRig.seagulls) {
+        const ang = this.elapsed * g.speed + g.phase;
+        const gx = g.cx + Math.cos(ang) * g.radius;
+        const gz = g.cz + Math.sin(ang) * g.radius;
+        const gy = g.height + Math.sin(this.elapsed * 1.4 + g.phase) * 1.1;
+        g.mesh.position.set(gx, gy, gz);
+        g.mesh.rotation.y = -ang;
+        const flap = Math.sin(this.elapsed * 6.5 + g.phase * 2) * 0.42;
+        g.leftWing.rotation.z = flap;
+        g.rightWing.rotation.z = -flap;
       }
     }
 
-    // Update 3D falling Monsoon Rain streaks around the player when raining
+    // Update 3D falling Rain & Heavy Slanted Monsoon Downpour streaks around the player
     if (this.rainLines && this.rainMat && this.rainOffsets) {
-      const showRain = this.weatherState.condition === 'rain' && !this.inHospital;
+      const showRain = weatherCfg.rainDensity > 0.01 && !this.inHospital;
       this.rainLines.visible = showRain;
       if (showRain) {
-        this.rainMat.opacity = 0.45 * this.weatherState.intensity;
+        const activeDrops = Math.max(
+          80,
+          Math.min(this.rainMaxDrops, Math.round(this.rainMaxDrops * weatherCfg.rainDensity)),
+        );
+        this.rainLines.geometry.setDrawRange(0, activeDrops * 2);
+        this.rainMat.color.setHex(weatherCfg.rainColorHex);
+        this.rainMat.opacity = weatherCfg.rainOpacity * this.weatherState.intensity;
         this.rainLines.position.set(this.playerX, Math.max(0, this.playerY - 2), this.playerZ);
         const posAttr = this.rainLines.geometry.getAttribute('position') as THREE.BufferAttribute;
         const arr = posAttr.array as Float32Array;
-        const dropCount = this.rainOffsets.length / 3;
-        const fallSpeed = 24 * dt;
-        const windDrift = 3.2 * dt;
-        for (let i = 0; i < dropCount; i++) {
+        const fallSpeed = weatherCfg.rainFallSpeed * dt;
+        const windDrift = weatherCfg.rainWindDrift * dt;
+        const streakLen = weatherCfg.rainStreakLen;
+        const streakTiltX = (weatherCfg.rainWindDrift / Math.max(1, weatherCfg.rainFallSpeed)) * streakLen;
+        for (let i = 0; i < activeDrops; i++) {
           let rx = this.rainOffsets[i * 3] - windDrift;
           let ry = this.rainOffsets[i * 3 + 1] - fallSpeed;
           const rz = this.rainOffsets[i * 3 + 2];
           if (ry < 0) {
-            ry += 24;
-            rx = ((rx + 28) % 56 + 56) % 56 - 28;
+            ry += 20;
+            rx = ((rx + 17) % 34 + 34) % 34 - 17;
           }
-          if (rx < -28) rx += 56;
+          if (rx < -17) rx += 34;
           this.rainOffsets[i * 3] = rx;
           this.rainOffsets[i * 3 + 1] = ry;
           arr[i * 6] = rx;
           arr[i * 6 + 1] = ry;
           arr[i * 6 + 2] = rz;
-          arr[i * 6 + 3] = rx - 0.14;
-          arr[i * 6 + 4] = ry - 0.88;
+          arr[i * 6 + 3] = rx - streakTiltX;
+          arr[i * 6 + 4] = ry - streakLen;
           arr[i * 6 + 5] = rz;
         }
         posAttr.needsUpdate = true;
       }
     }
 
-    if (phase !== this.lastLightingPhase) {
+    // Update Instanced Reflective Kerala Street Puddles & Raindrop Splash Ripples
+    if (this.puddleMesh && this.puddleMat && this.puddleVisualLevels) {
+      const showPuddles = !this.inHospital;
+      let anyVisiblePuddle = false;
+      let matrixDirty = false;
+      const puddleLerp = 1 - Math.exp(-4.2 * dt);
+
+      if (showPuddles) {
+        _puddleTint.copy(this.scene.background as THREE.Color).lerp(_skyTopWork, 0.35);
+        this.puddleMat.color.lerp(_puddleTint, lightLerp);
+        this.puddleMat.opacity =
+          weatherCfg.condition === 'monsoon'
+            ? 0.82
+            : weatherCfg.condition === 'rain'
+              ? 0.72
+              : 0.5;
+      }
+
+      for (let i = 0; i < this.puddleSpecs.length; i++) {
+        const spec = this.puddleSpecs[i];
+        const targetVis = showPuddles
+          ? getPuddleVisibility(spec, this.weatherState.condition, this.weatherState.intensity)
+          : 0;
+        const prevVis = this.puddleVisualLevels[i];
+        const nextVis = prevVis + (targetVis - prevVis) * puddleLerp;
+        const clampedVis = nextVis < 0.015 && targetVis === 0 ? 0 : nextVis;
+        if (Math.abs(clampedVis - prevVis) > 0.002) {
+          this.puddleVisualLevels[i] = clampedVis;
+          matrixDirty = true;
+          if (clampedVis <= 0.015) {
+            _scale.set(0, 0, 0);
+            _v1.set(spec.x, -2, spec.z);
+            _quat.identity();
+          } else {
+            // Monsoon puddles swell slightly larger (~1.16x) as streets flood with rainwater
+            const sizeBoost = weatherCfg.condition === 'monsoon' ? 1.16 : 1.0;
+            const grow = (0.45 + 0.55 * clampedVis) * sizeBoost;
+            _v1.set(spec.x, 0.062, spec.z);
+            _euler.set(0, spec.rotation, 0);
+            _quat.setFromEuler(_euler);
+            _scale.set(spec.radiusX * grow, 1, spec.radiusZ * grow);
+          }
+          _mat4.compose(_v1, _quat, _scale);
+          this.puddleMesh.setMatrixAt(i, _mat4);
+        }
+        if (clampedVis > 0.02) anyVisiblePuddle = true;
+      }
+      if (matrixDirty) {
+        this.puddleMesh.instanceMatrix.needsUpdate = true;
+      }
+      this.puddleMesh.visible = anyVisiblePuddle && showPuddles;
+
+      // Animate expanding raindrop ripple rings across nearby active puddles during Rain & Monsoon!
+      if (this.puddleRippleMesh && this.puddleRippleMat) {
+        const showRipples =
+          showPuddles && anyVisiblePuddle && weatherCfg.rainDensity > 0.05;
+        this.puddleRippleMesh.visible = showRipples;
+        if (showRipples) {
+          const rippleCount = this.puddleRippleMesh.count;
+          const speed = weatherCfg.condition === 'monsoon' ? 2.8 : 1.75;
+          this.puddleRippleMat.opacity =
+            (weatherCfg.condition === 'monsoon' ? 0.54 : 0.34) * this.weatherState.intensity;
+          _quat.identity();
+          let assigned = 0;
+          for (let i = 0; i < this.puddleSpecs.length && assigned < rippleCount; i++) {
+            if (this.puddleVisualLevels[i] < 0.2) continue;
+            const spec = this.puddleSpecs[i];
+            if (
+              Math.abs(spec.x - this.playerX) > 62 ||
+              Math.abs(spec.z - this.playerZ) > 62
+            ) {
+              continue;
+            }
+            const ringsPerPuddle = weatherCfg.condition === 'monsoon' ? 2 : 1;
+            for (let r = 0; r < ringsPerPuddle && assigned < rippleCount; r++) {
+              const cycle = (this.elapsed * speed + spec.phase + r * 0.53) % 1;
+              const offAngle = spec.phase * 3.1 + r * 2.4 + Math.floor(this.elapsed * speed + r) * 1.7;
+              const offDist = 0.42 * (0.3 + 0.7 * Math.abs(Math.sin(offAngle)));
+              const rx = spec.x + Math.cos(offAngle) * spec.radiusX * offDist;
+              const rz = spec.z + Math.sin(offAngle) * spec.radiusZ * offDist;
+              const ringScale = 0.35 + cycle * (weatherCfg.condition === 'monsoon' ? 2.4 : 1.7);
+              _v1.set(rx, 0.068, rz);
+              _scale.set(ringScale, 1, ringScale);
+              _mat4.compose(_v1, _quat, _scale);
+              this.puddleRippleMesh.setMatrixAt(assigned, _mat4);
+              assigned++;
+            }
+          }
+          _scale.set(0, 0, 0);
+          _v1.set(0, -10, 0);
+          for (let k = assigned; k < rippleCount; k++) {
+            _mat4.compose(_v1, _quat, _scale);
+            this.puddleRippleMesh.setMatrixAt(k, _mat4);
+          }
+          this.puddleRippleMesh.instanceMatrix.needsUpdate = true;
+        }
+      }
+    }
+
+    const monsoonLampBoost = weatherCfg.condition === 'monsoon' && phase === 'day';
+    if (phase !== this.lastLightingPhase || monsoonLampBoost !== this.lastMonsoonLampBoost) {
       this.lastLightingPhase = phase;
-      const nightGlow = phase === 'night' ? 1.8 : phase === 'sunset' ? 0.7 : 0.12;
-      const pointIntensity = phase === 'night' ? 18 : phase === 'sunset' ? 6 : 0;
+      this.lastMonsoonLampBoost = monsoonLampBoost;
+      const nightGlow =
+        phase === 'night' ? 1.8 : phase === 'sunset' ? 0.75 : monsoonLampBoost ? 0.95 : 0.12;
+      const pointIntensity =
+        phase === 'night' ? 18 : phase === 'sunset' ? 6 : monsoonLampBoost ? 5.5 : 0;
       for (const m of this.lampBulbMats) m.emissiveIntensity = nightGlow;
-      for (const m of this.windowMats) m.emissiveIntensity = phase === 'night' ? 0.95 : 0.14;
+      for (const m of this.windowMats) {
+        m.emissiveIntensity = phase === 'night' ? 0.95 : monsoonLampBoost ? 0.45 : 0.14;
+      }
       for (const pl of this.nightLights) pl.intensity = pointIntensity;
     }
   }
@@ -3452,7 +3964,7 @@ export class ThreeWorld {
           let finalZ = planeRes.z;
           let finalSpeed = planeRes.speed;
           let hitBuildingLow = false;
-          if (planeRes.y < 2.2) {
+          if (planeRes.y < 3.5) {
             // Keep aeroplanes off Malabar Beach sand/promenade (beach is walk + ground vehicles only!)
             if (!canVehicleAccessBeach(veh.type) && isPointOnBeachZone(finalX, finalZ)) {
               finalZ = Math.min(finalZ, 144);
@@ -3466,30 +3978,44 @@ export class ThreeWorld {
               WORLD_RADIUS + 20,
             );
             if (gRes.collided) {
-              hitBuildingLow = veh.peakAltitude >= 2.2 && !wasAutoLand;
+              hitBuildingLow = !wasAutoLand && Math.abs(finalSpeed) > 3.5;
               finalX = gRes.x;
               finalZ = gRes.z;
               finalSpeed *= 0.65;
             }
           }
 
-          if (planeRes.touchedDown || hitBuildingLow) {
-            const landingOutcome = evaluateAirplaneLanding(
-              finalX,
-              finalZ,
-              veh.peakAltitude,
-              wasAutoLand,
-            );
-            if (landingOutcome === 'crash_blast') {
-              this.triggerAirplaneCrashBlast(veh, finalX, finalZ);
-              return;
-            }
+          // REAL AEROPLANE CRASH PHYSICS (checked EVERY frame!):
+          // 1) Flying directly into ANY Western Ghats Mountain ridge -> BHOOOOM!
+          // 2) Landing OR normally driving/taxiing outside Kerala Airport tarmac -> BHOOOOM!
+          // 3) Low-altitude impact into a building -> BHOOOOM!
+          const hazard = evaluateAirplaneHazard(
+            finalX,
+            planeRes.y,
+            finalZ,
+            finalSpeed,
+            wasAutoLand,
+            planeRes.touchedDown,
+            hitBuildingLow,
+          );
+          if (hazard === 'mountain_blast') {
+            this.triggerAirplaneCrashBlast(veh, finalX, finalZ, 'mountain');
+            return;
+          }
+          if (hazard === 'off_airport_blast') {
+            this.triggerAirplaneCrashBlast(veh, finalX, finalZ, 'off_airport');
+            return;
+          }
+          if (hazard === 'building_blast') {
+            this.triggerAirplaneCrashBlast(veh, finalX, finalZ, 'building');
+            return;
+          }
+
+          if (planeRes.touchedDown) {
             veh.autoLanding = false;
             veh.peakAltitude = 0;
             this.spawnParticleBurst(finalX, 0.4, finalZ, 12, 0xe2e8f0);
-            if (planeRes.touchedDown) {
-              this.callbacks.onSafeLanding?.(veh.name);
-            }
+            this.callbacks.onSafeLanding?.(veh.name);
           }
 
           veh.x = finalX;
@@ -3570,46 +4096,14 @@ export class ThreeWorld {
               }
             }
           } else {
-            const roadZs = [-122, -72, -32, -4, 34, 72];
-            let destRoadZ = -4;
-            let bestRoadDist = Infinity;
-            for (const rz of roadZs) {
-              const d = Math.abs(destZ - rz);
-              if (d < bestRoadDist) {
-                bestRoadDist = d;
-                destRoadZ = rz;
-              }
-            }
-
-            let steerTargetX = destX;
-            let steerTargetZ = destZ;
-            const onDestRoad = Math.abs(veh.z - destRoadZ) < 8;
-            const nearCenterAve = Math.abs(veh.x) < 8;
-            if (!onDestRoad && dist > 16) {
-              if (!nearCenterAve) {
-                let curRoadZ = -4;
-                let bestCur = Infinity;
-                for (const rz of roadZs) {
-                  const d = Math.abs(veh.z - rz);
-                  if (d < bestCur) {
-                    bestCur = d;
-                    curRoadZ = rz;
-                  }
-                }
-                steerTargetX = 0;
-                steerTargetZ = curRoadZ;
-              } else {
-                steerTargetX = 0;
-                steerTargetZ = destRoadZ;
-              }
-            }
-
-            const dx = steerTargetX - veh.x;
-            const dz = steerTargetZ - veh.z;
+            // Road-lane + Sheru Statue Roundabout-safe Autopilot Steering (NEVER hits Golden Statue!)
+            const apTarget = computeRoadAutopilotTarget(veh.x, veh.z, destX, destZ);
+            const dx = apTarget.targetX - veh.x;
+            const dz = apTarget.targetZ - veh.z;
             const desiredYaw = Math.atan2(dx, dz);
             const yawErr = Math.atan2(Math.sin(desiredYaw - veh.yaw), Math.cos(desiredYaw - veh.yaw));
             veh.steerAngle = THREE.MathUtils.clamp(yawErr, -0.58, 0.58);
-            veh.yaw += THREE.MathUtils.clamp(yawErr, -3.4 * dt, 3.4 * dt);
+            veh.yaw += THREE.MathUtils.clamp(yawErr, -3.8 * dt, 3.8 * dt);
 
             let vehicleAhead = false;
             const fwdX = Math.sin(veh.yaw);
@@ -3740,8 +4234,26 @@ export class ThreeWorld {
             }
           }
         }
-        veh.x = vehPalmHit.pushedX;
-        veh.z = vehPalmHit.pushedZ;
+        // Road-Only Containment for ground vehicles ("no vehicles off paved roads!")
+        // Allows airborne stunt ramp jumps (veh.y >= 0.85) while keeping tires strictly off grass/beach sand!
+        let constrainedX = vehPalmHit.pushedX;
+        let constrainedZ = vehPalmHit.pushedZ;
+        if (!veh.isAircraft && veh.y < 0.85) {
+          const roadLock = constrainVehicleToDrivableRoads(
+            veh.x,
+            veh.z,
+            constrainedX,
+            constrainedZ,
+          );
+          if (roadLock.hitCurb) {
+            constrainedX = roadLock.x;
+            constrainedZ = roadLock.z;
+            veh.speed *= 0.84;
+            veh.lateralSpeed *= 0.45;
+          }
+        }
+        veh.x = constrainedX;
+        veh.z = constrainedZ;
 
         // Real Vehicle-to-Vehicle Elastic Momentum Collision (against other parked & traffic vehicles!)
         if (!this.autopilotDest && veh.y < 1.8) {
@@ -3786,6 +4298,41 @@ export class ThreeWorld {
                 soundEngine.playLand();
                 this.spawnParticleBurst((veh.x + other.x) * 0.5, veh.y + 0.9, (veh.z + other.z) * 0.5, 9, 0xfde047);
               }
+            }
+          }
+
+          // Solid collision between ground vehicles and parked aeroplanes (fuselage + wings)
+          const planeObbs = this.solidObbsScratch;
+          planeObbs.length = 0;
+          for (const other of this.liveVehicles) {
+            if (!other.isAircraft || !other.mesh.visible || other.y > 2.6) continue;
+            const pdx = other.x - veh.x;
+            const pdz = other.z - veh.z;
+            if (pdx * pdx + pdz * pdz > 24 * 24) continue;
+            pushVehicleSolidOBBs(planeObbs, other.type, other.x, other.y, other.z, other.yaw);
+          }
+          if (planeObbs.length > 0) {
+            const planeRes = resolveCharacterSolidBodies(
+              veh.x,
+              veh.y,
+              veh.z,
+              curVx,
+              curVz,
+              1.45,
+              planeObbs,
+              [],
+              undefined,
+              undefined,
+              2.2,
+              2,
+            );
+            if (planeRes.collided) {
+              veh.x = planeRes.x;
+              veh.z = planeRes.z;
+              curVx = planeRes.vx * 0.6;
+              curVz = planeRes.vz * 0.6;
+              veh.speed = curVx * fwdX + curVz * fwdZ;
+              veh.lateralSpeed = curVx * Math.cos(veh.yaw) - curVz * Math.sin(veh.yaw);
             }
           }
 
@@ -3922,6 +4469,9 @@ export class ThreeWorld {
       desiredMoveZ = (cosY * nf + sinY * ns) * Math.min(1, mag);
     }
 
+    const prevPlayerX = this.playerX;
+    const prevPlayerZ = this.playerZ;
+
     const charStep = stepCharacterPhysics(
       {
         x: this.playerX,
@@ -3944,12 +4494,41 @@ export class ThreeWorld {
     );
 
     const palmHit = checkPalmTreeCollision(charStep.x, charStep.z, 0.85, this.livePalms, 0.55);
-    this.playerX = palmHit.pushedX;
+    let nextPlayerX = palmHit.pushedX;
+    let nextPlayerZ = palmHit.pushedZ;
+    let nextPlayerVx = palmHit.hit ? charStep.vx * 0.25 : charStep.vx;
+    let nextPlayerVz = palmHit.hit ? charStep.vz * 0.25 : charStep.vz;
+
+    // Common Solid-Body Physics: prevent character body from crossing through aeroplanes
+    // (fuselage + wings), parked vehicles, moving traffic, trains, benches, or NPCs!
+    this.collectSolidBodiesAround(nextPlayerX, nextPlayerZ, 28, true);
+    const solidRes = resolveCharacterSolidBodies(
+      nextPlayerX,
+      charStep.y,
+      nextPlayerZ,
+      nextPlayerVx,
+      nextPlayerVz,
+      0.58,
+      this.solidObbsScratch,
+      this.solidCirclesScratch,
+      prevPlayerX,
+      prevPlayerZ,
+    );
+    if (solidRes.collided) {
+      // Re-clamp once against static building colliders so moving traffic never pushes Sheru into a wall
+      const wallSafe = resolveCircleWorldCollision(solidRes.x, solidRes.z, 0.72, this.colliders);
+      nextPlayerX = wallSafe.x;
+      nextPlayerZ = wallSafe.z;
+      nextPlayerVx = solidRes.vx;
+      nextPlayerVz = solidRes.vz;
+    }
+
+    this.playerX = nextPlayerX;
     this.playerY = charStep.y;
-    this.playerZ = palmHit.pushedZ;
-    this.playerVx = palmHit.hit ? charStep.vx * 0.25 : charStep.vx;
+    this.playerZ = nextPlayerZ;
+    this.playerVx = nextPlayerVx;
+    this.playerVz = nextPlayerVz;
     this.playerVy = charStep.vy;
-    this.playerVz = palmHit.hit ? charStep.vz * 0.25 : charStep.vz;
     this.playerYaw = charStep.yaw;
     this.coyoteTimer = charStep.coyoteTimer;
     this.jumpBufferTimer = charStep.jumpBufferTimer;
@@ -3962,13 +4541,26 @@ export class ThreeWorld {
       }
     }
 
-    const moveSpeed = charStep.horizontalSpeed;
+    const moveSpeed = solidRes.collided ? Math.hypot(nextPlayerVx, nextPlayerVz) : charStep.horizontalSpeed;
     if (moveSpeed > 0.25) {
       this.walkPhase += moveSpeed * dt * 1.45;
       this.footstepAccum += moveSpeed * dt;
       if (charStep.grounded && this.footstepAccum > (running ? 2.6 : 2.1)) {
         this.footstepAccum = 0;
-        soundEngine.playFootstep(running);
+        if (
+          !this.inHospital &&
+          isPointInActivePuddle(
+            this.playerX,
+            this.playerZ,
+            this.puddleSpecs,
+            this.weatherState.condition,
+          )
+        ) {
+          soundEngine.playSplash();
+          this.spawnParticleBurst(this.playerX, 0.18, this.playerZ, 6, 0xbae6fd);
+        } else {
+          soundEngine.playFootstep(running);
+        }
       }
     }
 
@@ -4442,8 +5034,34 @@ export class ThreeWorld {
       }
     }
 
-    // 5. Update Living Kerala Road Traffic (10-14 compact vehicles, Bus Stops, Red Lights, Emergency Yield, Road Ego!)
+    // 5. Update Living Kerala Road Traffic (Bus Stops, Red Lights, SIREN PULL-OVER YIELD, Road Ego!)
     if (this.mode === 'playing' && !this.modalOpen) {
+      // Collect EVERY active siren source into reusable scratch array (zero GC!)
+      const sirenSources = this.sirenSourcesScratch;
+      sirenSources.length = 0;
+      for (const v of this.liveVehicles) {
+        if (v.sirenOn && v.mesh.visible) {
+          sirenSources.push({ x: v.x, z: v.z, yaw: v.yaw });
+        }
+      }
+      if (this.emergencyDispatch.active && this.emergencyDispatch.ambulanceId) {
+        const amb = this.liveVehicles.find((v) => v.id === this.emergencyDispatch.ambulanceId);
+        if (amb && !amb.sirenOn) {
+          sirenSources.push({ x: amb.x, z: amb.z, yaw: amb.yaw });
+        }
+      }
+      if (this.fireRescueDispatch.active && this.fireRescueDispatch.fireEngineId) {
+        const fe = this.liveVehicles.find((v) => v.id === this.fireRescueDispatch.fireEngineId);
+        if (fe && !fe.sirenOn) {
+          sirenSources.push({ x: fe.x, z: fe.z, yaw: fe.yaw });
+        }
+      }
+      for (const sAi of this.aiTraffic) {
+        if (sAi.active && sAi.isEmergency) {
+          sirenSources.push({ x: sAi.x, z: sAi.z, yaw: sAi.yaw });
+        }
+      }
+
       for (const ai of this.aiTraffic) {
         if (!ai.active) continue;
 
@@ -4482,6 +5100,11 @@ export class ThreeWorld {
           if (ai.wpIndex === 0) ai.lastBusStopId = '';
         }
 
+        // Siren Emergency Pull-Over ("siren vehicles varumbol all vehicles side kodukkanam")!
+        const yieldInfo = !ai.isEmergency
+          ? computeSirenYieldBehavior(ai.x, ai.z, ai.yaw, sirenSources)
+          : { yielding: false, pullOverX: 0, pullOverZ: 0, speedScale: 1, hazardFlash: false };
+
         const desiredYaw = Math.atan2(dx, dz);
         const yawDiff = Math.atan2(Math.sin(desiredYaw - ai.yaw), Math.cos(desiredYaw - ai.yaw));
         ai.yaw += THREE.MathUtils.clamp(yawDiff, -3.2 * dt, 3.2 * dt);
@@ -4499,9 +5122,17 @@ export class ThreeWorld {
           }
         }
 
-        // Give way during Emergency Siren / 108 Ambulance dispatch!
-        if (emergencyYieldActive && !ai.isEmergency) {
-          targetSpeed *= 0.22;
+        if (yieldInfo.yielding) {
+          // Pull smoothly aside toward the outer paved curb shoulder & stop so siren passes cleanly!
+          targetSpeed *= yieldInfo.speedScale;
+          const pullStep = Math.min(1, dt * 3.8);
+          const candidateX = ai.x + yieldInfo.pullOverX * pullStep;
+          const candidateZ = ai.z + yieldInfo.pullOverZ * pullStep;
+          const roadEdge = constrainVehicleToDrivableRoads(ai.x, ai.z, candidateX, candidateZ);
+          ai.x = roadEdge.x;
+          ai.z = roadEdge.z;
+        } else if (emergencyYieldActive && !ai.isEmergency) {
+          targetSpeed *= 0.28;
         }
 
         // Slow down cleanly if player vehicle is right in front
@@ -4510,7 +5141,7 @@ export class ThreeWorld {
           targetSpeed *= 0.25;
         }
 
-        ai.speed += (targetSpeed - ai.speed) * Math.min(1, dt * 4.5);
+        ai.speed += (targetSpeed - ai.speed) * Math.min(1, dt * 4.8);
         ai.x += Math.sin(ai.yaw) * ai.speed * dt;
         ai.z += Math.cos(ai.yaw) * ai.speed * dt;
 
@@ -5125,7 +5756,84 @@ export class ThreeWorld {
       if (keyThrottle !== 0) throttleInput = keyThrottle;
     }
 
-    this.railwayState = stepRailwaySimulation(this.railwayState, dt, throttleInput);
+    // Collect ALL humans, vehicles & physical objects currently near/on the railway tracks
+    // into reusable scratch array (zero per-frame array allocation!)
+    const trackObstacles = this.trackObstaclesScratch;
+    trackObstacles.length = 0;
+    if (!this.activeVehicleId && this.railwayState.riderMode === 'none' && this.playerY < 3.6) {
+      trackObstacles.push({
+        x: this.playerX,
+        y: this.playerY,
+        z: this.playerZ,
+        radius: 1.0,
+        label: 'Sheru Bhai',
+      });
+    }
+    for (const v of this.liveVehicles) {
+      if (!v.mesh.visible || v.y >= 3.6) continue;
+      trackObstacles.push({
+        x: v.x,
+        y: v.y,
+        z: v.z,
+        radius: v.type === 'bus' || v.type === 'fire_engine' ? 2.4 : 1.75,
+        label: v.name,
+      });
+    }
+    for (const ai of this.aiTraffic) {
+      if (!ai.active) continue;
+      trackObstacles.push({
+        x: ai.x,
+        y: 0,
+        z: ai.z,
+        radius: ai.isBus ? 2.3 : 1.7,
+        label: ai.isBus ? 'Kerala Bus' : 'Road Vehicle',
+      });
+    }
+    for (const n of this.liveNpcs) {
+      trackObstacles.push({
+        x: n.x,
+        y: 0,
+        z: n.z,
+        radius: 0.9,
+        label: n.name,
+      });
+    }
+    if (this.purseChase.active) {
+      trackObstacles.push({
+        x: this.purseChase.thiefX,
+        y: 0,
+        z: this.purseChase.thiefZ,
+        radius: 0.9,
+        label: 'Person on Track',
+      });
+    }
+    for (const c of this.townCrowd) {
+      trackObstacles.push({
+        x: c.x,
+        y: 0,
+        z: c.z,
+        radius: 0.85,
+        label: 'Pedestrian',
+      });
+    }
+    for (const p of this.physicsProps) {
+      if (p.y < 3.4) {
+        trackObstacles.push({
+          x: p.x,
+          y: p.y,
+          z: p.z,
+          radius: p.radius + 0.35,
+          label: 'Road Object',
+        });
+      }
+    }
+
+    this.railwayState = stepRailwaySimulation(
+      this.railwayState,
+      dt,
+      throttleInput,
+      trackObstacles,
+    );
 
     // Sync all 4 articulated Kerala Express trains (Locomotive + 3 Coaches) along Track A & Track B
     for (let i = 0; i < this.trainRigs.length; i++) {

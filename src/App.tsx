@@ -56,6 +56,7 @@ import {
 import {
   buildWeatherHudState,
   createInitialWeatherState,
+  getWeatherVisualConfig,
 } from './game/weatherLogic';
 import { PurseChaseAction } from './game/chaseLogic';
 import {
@@ -368,15 +369,24 @@ export default function App() {
         ) {
           return;
         }
-        const crashSite = roadName ?? 'Town Road';
+        const crashSite = roadName ?? 'Off-Airport Zone';
+        const isMountainCrash = crashSite.toLowerCase().includes('mountain');
         const meta =
           cause === 'airplane_crash'
-            ? {
-                title: `MAYDAY! PLANE BLAST ON ${crashSite.toUpperCase()}!`,
-                mlMessage:
-                  'അയ്യോ! റൺവേ വിട്ട് ടൗൺ റോഡിൽ വിമാനം ഇറക്കി പൊട്ടിത്തെറിച്ചു! 108 ആംബുലൻസും ഫയർ ഫോഴ്‌സും സൈറൺ ഓണാക്കി പാഞ്ഞെത്തുന്നു!',
-                enMessage: `BOOM! Manual landing on ${crashSite} instead of Airport Runway 09/27 caused a cartoon plane blast! 108 Ambulance & Kerala Fire Rescue Engine are rushing to the scene!`,
-              }
+            ? isMountainCrash
+              ? {
+                  title: `BHOOOOM! PLANE HIT WESTERN GHATS MOUNTAIN!`,
+                  mlMessage:
+                    'ഭൂം!! വിമാനം നേരെ മലയിൽ ഇടിച്ച് പൊട്ടിത്തെറിച്ചു! 108 ആംബുലൻസും ഫയർ ഫോഴ്‌സും സൈറൺ ഓണാക്കി പാഞ്ഞെത്തുന്നു!',
+                  enMessage:
+                    'BHOOOOM! Your aeroplane flew straight into the Western Ghats mountain ridge and blasted! 108 Ambulance & Kerala Fire Rescue are racing in!',
+                }
+              : {
+                  title: `BHOOOOM! OFF-AIRPORT PLANE BLAST AT ${crashSite.toUpperCase()}!`,
+                  mlMessage:
+                    'ഭൂം!! എയർപോർട്ടിന് പുറത്ത് വിമാനം ഇറക്കിയതോ ഓടിച്ചതോ കാരണം പൊട്ടിത്തെറിച്ചു! 108 ആംബുലൻസും ഫയർ ഫോഴ്‌സും പാഞ്ഞെത്തുന്നു!',
+                  enMessage: `BHOOOOM! Going or landing outside Kerala Airport Runway 09/27 (${crashSite}) caused a real plane blast! 108 Ambulance & Kerala Fire Rescue are rushing in!`,
+                }
             : cause === 'coconut_drop'
               ? {
                   title: 'COCONUT BONK UNDER PALM TREE!',
@@ -650,6 +660,12 @@ export default function App() {
       } else if (e.code === 'KeyT' && !activeDialogue && activePanel === 'none') {
         const nextTime = worldRef.current?.cycleTimeOfDay() ?? 0.28;
         progressRef.current = { ...progressRef.current, timeOfDay: nextTime };
+      } else if (e.code === 'KeyY' && !activeDialogue && activePanel === 'none') {
+        const nextCond = worldRef.current?.cycleWeather();
+        if (nextCond) {
+          const cfg = getWeatherVisualConfig(nextCond, hudRef.current.timePhase);
+          showToast(`Weather: ${cfg.label} (${cfg.mlLabel})`);
+        }
       } else if (e.code === 'KeyC' && !activeDialogue && activePanel === 'none') {
         if (hudRef.current.railway?.riderMode && hudRef.current.railway.riderMode !== 'none') {
           return; // KeyC toggles train cab/window view inside ThreeWorld
@@ -947,6 +963,13 @@ export default function App() {
           onCycleTime={() => {
             const nextTime = worldRef.current?.cycleTimeOfDay() ?? 0.28;
             progressRef.current = { ...progressRef.current, timeOfDay: nextTime };
+          }}
+          onCycleWeather={() => {
+            const nextCond = worldRef.current?.cycleWeather();
+            if (nextCond) {
+              const cfg = getWeatherVisualConfig(nextCond, hudRef.current.timePhase);
+              showToast(`Weather: ${cfg.label} (${cfg.mlLabel})`);
+            }
           }}
           onToggleMute={() => setSettings((s) => ({ ...s, muted: !s.muted }))}
           onPause={() => {

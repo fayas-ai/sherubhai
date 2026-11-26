@@ -303,6 +303,59 @@ export function getWorldColliders(builtPlotIds: string[] = []): AABB[] {
     maxZ: -2.0,
     height: 6.2,
   });
+
+  // Kerala International Airport static structures (ATC Tower, GHOP Hangar walls, Gantry Arch pillars)
+  // Carefully leaves the Hangar north bay, central Airport road (x ∈ [-6.9, 6.9]), Apron ramp, and aircraft spawns clear!
+  boxes.push(
+    {
+      id: 'airport_atc_tower',
+      minX: -55.6,
+      maxX: -48.4,
+      minZ: -116.6,
+      maxZ: -109.4,
+      height: 24,
+    },
+    {
+      id: 'airport_hangar_back',
+      minX: 24.0,
+      maxX: 44.0,
+      minZ: -107.0,
+      maxZ: -106.0,
+      height: 8.2,
+    },
+    {
+      id: 'airport_hangar_left',
+      minX: 24.0,
+      maxX: 25.0,
+      minZ: -120.0,
+      maxZ: -106.0,
+      height: 8.2,
+    },
+    {
+      id: 'airport_hangar_right',
+      minX: 43.0,
+      maxX: 44.0,
+      minZ: -120.0,
+      maxZ: -106.0,
+      height: 8.2,
+    },
+    {
+      id: 'airport_arch_left',
+      minX: -8.3,
+      maxX: -6.9,
+      minZ: -104.7,
+      maxZ: -103.3,
+      height: 8.8,
+    },
+    {
+      id: 'airport_arch_right',
+      minX: 6.9,
+      maxX: 8.3,
+      minZ: -104.7,
+      maxZ: -103.3,
+      height: 8.8,
+    },
+  );
   return boxes;
 }
 

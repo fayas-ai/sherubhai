@@ -70,6 +70,135 @@ export interface LiveTrainState {
   nextStationId: string;
   nextStationDist: number;
   honkPending: boolean;
+  obstacleBlocked: boolean;
+  blockedByLabel: string | null;
+}
+
+export interface TrackObstacle {
+  x: number;
+  y?: number;
+  z: number;
+  radius: number;
+  label: string;
+}
+
+export interface MountainPeakDef {
+  x: number;
+  z: number;
+  rx: number;
+  rz: number;
+  h: number;
+}
+
+export interface MountainRangeDef {
+  id: string;
+  name: string;
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  segX: number;
+  segZ: number;
+  peaks: MountainPeakDef[];
+}
+
+/**
+ * Single source of truth for Western Ghats mountain geometry AND aeroplane mountain-crash physics!
+ * Leaves Airport Runway 09/27 approach corridor (z = -170..-118) and South Arabian Sea open.
+ */
+export const WESTERN_GHATS_RANGES: MountainRangeDef[] = [
+  {
+    id: 'north_sahyadri',
+    name: 'Northern Sahyadri Mountains',
+    minX: -340,
+    maxX: 340,
+    minZ: -370,
+    maxZ: -205,
+    segX: 46,
+    segZ: 18,
+    peaks: [
+      { x: -245, z: -265, rx: 95, rz: 70, h: 66 },
+      { x: -135, z: -275, rx: 105, rz: 74, h: 86 },
+      { x: -20, z: -290, rx: 115, rz: 78, h: 98 },
+      { x: 95, z: -278, rx: 105, rz: 72, h: 82 },
+      { x: 215, z: -262, rx: 100, rz: 70, h: 74 },
+      { x: -75, z: -242, rx: 68, rz: 44, h: 42 },
+      { x: 65, z: -240, rx: 72, rz: 44, h: 46 },
+    ],
+  },
+  {
+    id: 'east_ghats',
+    name: 'Eastern Western-Ghats Ridge',
+    minX: 194,
+    maxX: 365,
+    minZ: -116,
+    maxZ: 172,
+    segX: 18,
+    segZ: 32,
+    peaks: [
+      { x: 270, z: -60, rx: 78, rz: 75, h: 78 },
+      { x: 285, z: 25, rx: 86, rz: 82, h: 92 },
+      { x: 268, z: 105, rx: 76, rz: 72, h: 64 },
+      { x: 235, z: -12, rx: 48, rz: 54, h: 40 },
+      { x: 238, z: 62, rx: 50, rz: 54, h: 44 },
+    ],
+  },
+  {
+    id: 'west_headland',
+    name: 'Western Coastal Headland Hills',
+    minX: -365,
+    maxX: -194,
+    minZ: -116,
+    maxZ: 166,
+    segX: 18,
+    segZ: 30,
+    peaks: [
+      { x: -270, z: -55, rx: 76, rz: 75, h: 68 },
+      { x: -282, z: 28, rx: 82, rz: 78, h: 76 },
+      { x: -262, z: 102, rx: 72, rz: 66, h: 52 },
+      { x: -234, z: -8, rx: 46, rz: 50, h: 34 },
+    ],
+  },
+];
+
+/**
+ * Exact mountain terrain height at world (x, z), matching the 3D sculpted mountain meshes!
+ */
+export function sampleMountainElevation(wx: number, wz: number): number {
+  let maxY = 0;
+  for (const range of WESTERN_GHATS_RANGES) {
+    if (wx < range.minX || wx > range.maxX || wz < range.minZ || wz > range.maxZ) continue;
+    const cx = (range.minX + range.maxX) * 0.5;
+    const cz = (range.minZ + range.maxZ) * 0.5;
+    const width = range.maxX - range.minX;
+    const depth = range.maxZ - range.minZ;
+    const lx = wx - cx;
+    const lz = wz - cz;
+
+    let h = 0;
+    for (const p of range.peaks) {
+      const dx = (wx - p.x) / p.rx;
+      const dz = (wz - p.z) / p.rz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < 1.35) {
+        const falloff = Math.max(0, 1 - Math.sqrt(d2) / 1.16);
+        const ridged = falloff * falloff * (1.28 - 0.28 * falloff);
+        h = Math.max(h, p.h * ridged);
+      }
+    }
+    if (h > 0.6) {
+      const crag =
+        Math.sin(wx * 0.055 + wz * 0.042) * 3.8 +
+        Math.cos(wx * 0.11 - wz * 0.095) * 2.1 +
+        Math.sin((wx - wz) * 0.032) * 4.2;
+      h = Math.max(0, h + crag * Math.min(1, h / 22));
+    }
+    const edgeFadeX = Math.min(1, (width * 0.5 - Math.abs(lx)) / 18);
+    const edgeFadeZ = Math.min(1, (depth * 0.5 - Math.abs(lz)) / 18);
+    const finalY = h * Math.max(0, Math.min(edgeFadeX, edgeFadeZ)) - 0.6;
+    if (finalY > maxY) maxY = finalY;
+  }
+  return maxY;
 }
 
 export type StationPassengerPhase =
@@ -435,10 +564,10 @@ export const TRAIN_DEFS: TrainDef[] = [
     mlName: 'വേണാട് എക്സ്പ്രസ്',
     track: 'A',
     platform: '1',
-    locoColor: 0xea580c, // Iconic Indian Railways orange/cream WAP-7
-    coachColor: 0x1d4ed8, // Classic Kerala ICF/LHB blue
-    stripeColor: 0xfef08a,
-    roofColor: 0xdbeafe,
+    locoColor: 0xc85524, // Authentic Indian Railways burnt-saffron WAP-7
+    coachColor: 0x264b78, // Classic Kerala ICF/LHB steel-blue
+    stripeColor: 0xf0dfab,
+    roofColor: 0xc8d1db,
     initialPhase: 0.04, // Just approaching Malabar Beach Halt!
     cruiseSpeed: 18.5,
   },
@@ -449,10 +578,10 @@ export const TRAIN_DEFS: TrainDef[] = [
     mlName: 'വന്ദേ കേരള എക്സ്പ്രസ്',
     track: 'A',
     platform: '1',
-    locoColor: 0xf8fafc, // Sleek Vande Bharat white & saffron-blue
-    coachColor: 0xf1f5f9,
-    stripeColor: 0xf97316,
-    roofColor: 0x1e3a8a,
+    locoColor: 0xedf0f4, // Sleek Vande Bharat pearl-silver & saffron-navy
+    coachColor: 0xe6ebf0,
+    stripeColor: 0xd96b27,
+    roofColor: 0x213859,
     initialPhase: 0.54,
     cruiseSpeed: 19.5,
   },
@@ -463,10 +592,10 @@ export const TRAIN_DEFS: TrainDef[] = [
     mlName: 'മലബാർ മെയിൽ',
     track: 'B',
     platform: 'B',
-    locoColor: 0x991b1b, // Classic deep crimson WAP-4
-    coachColor: 0x7f1d1d, // Rich Rajdhani/Mail maroon
-    stripeColor: 0xfbbf24,
-    roofColor: 0xe2e8f0,
+    locoColor: 0x8b2323, // Classic LHB crimson WAP-4
+    coachColor: 0x731d1d, // Authentic Rajdhani/Mail maroon
+    stripeColor: 0xdba834,
+    roofColor: 0xcfd6de,
     initialPhase: 0.24,
     cruiseSpeed: 18.0,
   },
@@ -477,10 +606,10 @@ export const TRAIN_DEFS: TrainDef[] = [
     mlName: 'പരശുറാം എക്സ്പ്രസ്',
     track: 'B',
     platform: 'B',
-    locoColor: 0x065f46, // Emerald Kerala coastal livery
-    coachColor: 0x047857,
-    stripeColor: 0xfde047,
-    roofColor: 0xd1fae5,
+    locoColor: 0x1f5c47, // Deep Malabar emerald coastal livery
+    coachColor: 0x276b53,
+    stripeColor: 0xe9d384,
+    roofColor: 0xc8d9d2,
     initialPhase: 0.74,
     cruiseSpeed: 18.5,
   },
@@ -623,6 +752,8 @@ export function createInitialRailwayState(): RailwaySimulationState {
       nextStationId: next.station.id,
       nextStationDist: next.dist,
       honkPending: false,
+      obstacleBlocked: false,
+      blockedByLabel: null,
     };
   });
 
@@ -674,10 +805,38 @@ export function createInitialRailwayState(): RailwaySimulationState {
   };
 }
 
+/**
+ * Scans along `track` ahead of a train's locomotive nose (+8m to +34m) for ANY human,
+ * vehicle, NPC, or rigid-body object on/near the rails (ignoring actors safely up on the 4.9m Foot-Overbridge!).
+ */
+export function findTrackObstacleAhead(
+  track: RailwayTrackId,
+  trainDistance: number,
+  obstacles: TrackObstacle[],
+): { distanceAhead: number; label: string } | null {
+  if (obstacles.length === 0) return null;
+  const total = getTrackLength(track);
+  for (let ahead = 8; ahead <= 34; ahead += 3.2) {
+    const pt = sampleTrackPoint(track, modPos(trainDistance + ahead, total));
+    for (let i = 0; i < obstacles.length; i++) {
+      const obs = obstacles[i];
+      if ((obs.y ?? 0) >= 3.6) continue; // Safely overhead on Foot-Overbridge or flying!
+      const dx = obs.x - pt.x;
+      const dz = obs.z - pt.z;
+      const hitRadius = obs.radius + 2.35;
+      if (dx * dx + dz * dz <= hitRadius * hitRadius) {
+        return { distanceAhead: ahead, label: obs.label };
+      }
+    }
+  }
+  return null;
+}
+
 export function stepRailwaySimulation(
   state: RailwaySimulationState,
   dt: number,
   driverThrottleInput: number = 0,
+  obstacles: TrackObstacle[] = [],
 ): RailwaySimulationState {
   const safeDt = Math.max(0, Math.min(dt, 0.1));
 
@@ -695,6 +854,11 @@ export function stepRailwaySimulation(
       if (gap < minAheadSameTrack) minAheadSameTrack = gap;
     }
 
+    // Real-world Track Safety Sensor: ANY human, vehicle, or object on the track stops the train!
+    const obsHit = findTrackObstacleAhead(t.track, t.distance, obstacles);
+    const obstacleBlocked = obsHit !== null;
+    const blockedByLabel = obsHit ? obsHit.label : null;
+
     let distance = t.distance;
     let speed = t.speed;
     let phase = t.phase;
@@ -703,7 +867,27 @@ export function stepRailwaySimulation(
     let departGraceTimer = Math.max(0, t.departGraceTimer - safeDt);
     let honkPending = false;
 
-    if (isPlayerDriving) {
+    if (obstacleBlocked) {
+      // Immediate Emergency Braking! Sound horn once when braking engages
+      if (!t.obstacleBlocked && speed > 1.0) {
+        honkPending = true;
+      }
+      const emergencyDecel = obsHit.distanceAhead < 16 ? 48 : 30;
+      speed = Math.max(0, speed - emergencyDecel * safeDt);
+      if (obsHit.distanceAhead <= 11.5) {
+        speed = 0; // Hard safety stop before contact!
+      }
+      distance = modPos(distance + speed * safeDt, total);
+      const inZone = getStationInStopZone(t.track, distance, 18);
+      if (speed <= 0.1) {
+        speed = 0;
+        phase = inZone ? 'stopped' : 'braking';
+        stoppedAtStationId = inZone ? inZone.id : null;
+      } else {
+        phase = 'braking';
+        stoppedAtStationId = null;
+      }
+    } else if (isPlayerDriving) {
       const maxDriveSpeed = 24.5;
       if (driverThrottleInput > 0.05) {
         speed = Math.min(maxDriveSpeed, speed + 10.5 * driverThrottleInput * safeDt);
@@ -791,6 +975,8 @@ export function stepRailwaySimulation(
       nextStationId: nextInfo.station.id,
       nextStationDist: Math.round(nextInfo.dist),
       honkPending,
+      obstacleBlocked,
+      blockedByLabel,
     };
   });
 
@@ -1112,7 +1298,7 @@ export function fastForwardNextTrainAtPlatform(
       best = tr;
     }
   }
-  const approachDist = modPos(stopD - 28, total);
+  const approachDist = modPos(stopD - 14, total);
   const sample = sampleTrackPoint(track, approachDist);
   return {
     ...state,
@@ -1174,6 +1360,7 @@ export function buildRailwayHudState(
       canAlight: tr.phase === 'stopped' && curSt !== null,
       seatView: state.seatView,
       passingOppositeTrainName: state.passingOppositeTrainName,
+      obstacleStoppedLabel: tr.obstacleBlocked ? tr.blockedByLabel : null,
     };
   }
 
@@ -1205,5 +1392,6 @@ export function buildRailwayHudState(
     canAlight: false,
     seatView: state.seatView,
     passingOppositeTrainName: null,
+    obstacleStoppedLabel: null,
   };
 }

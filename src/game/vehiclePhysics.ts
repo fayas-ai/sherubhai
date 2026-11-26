@@ -1,4 +1,5 @@
 import { VehicleArchetype } from '../types/game';
+import { sampleMountainElevation } from './railwayLogic';
 
 export const AIRPORT_RUNWAY = {
   centerX: 0,
@@ -58,6 +59,53 @@ export function evaluateAirplaneLanding(
   if (isPointOnAirportTarmac(x, z)) return 'safe_runway';
   if (peakAltitude < 2.2) return 'safe_runway';
   return 'crash_blast';
+}
+
+export type AirplaneHazardOutcome =
+  | 'safe'
+  | 'mountain_blast'
+  | 'off_airport_blast'
+  | 'building_blast';
+
+/**
+ * Real Aeroplane Crash Physics:
+ * 1) Flying straight into ANY Western Ghats mountain ridge -> 'mountain_blast' (BHOOOOM!)
+ * 2) Landing OR taxiing/driving normally outside Kerala Airport Runway/Apron -> 'off_airport_blast' (BHOOOOM!)
+ * 3) Crashing low into any town building -> 'building_blast' (BHOOOOM!)
+ */
+export function evaluateAirplaneHazard(
+  x: number,
+  y: number,
+  z: number,
+  speed: number,
+  wasAutoLand: boolean,
+  touchedDown: boolean,
+  hitBuilding: boolean,
+): AirplaneHazardOutcome {
+  if (wasAutoLand) return 'safe';
+
+  // 1. Real 3D Mountain Collision check against the sculpted Western Ghats heightfield!
+  const mountainH = sampleMountainElevation(x, z);
+  if (mountainH > 2.5 && y <= mountainH + 2.4) {
+    return 'mountain_blast';
+  }
+
+  // 2. Low building impact
+  if (hitBuilding) {
+    return 'building_blast';
+  }
+
+  // 3. Landing OR normal ground taxiing/driving outside Kerala International Airport!
+  const onAirport = isPointOnAirportTarmac(x, z);
+  if (!onAirport) {
+    if (touchedDown) return 'off_airport_blast';
+    // Even without taking off, driving/taxiing a plane out of the airport perimeter blasts!
+    if (y <= 1.8 && Math.abs(speed) > 1.2) {
+      return 'off_airport_blast';
+    }
+  }
+
+  return 'safe';
 }
 
 /**
