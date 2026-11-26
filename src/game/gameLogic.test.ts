@@ -23,6 +23,7 @@ import {
   constrainVehicleToDrivableRoads,
   detectCurrentRoadName,
   doesBoxOverlapAnyRoad,
+  getRoadBounds,
   isPointOnAnyRoad,
   isPointOnDrivablePavement,
   snapPointToNearestRoad,
@@ -46,6 +47,15 @@ import {
   pickWeightedAmbientSound,
   stepAmbientScheduler,
 } from './ambientAudioLogic';
+import {
+  clampAiVehicleToRoad,
+  computeAiTurnSteering,
+  computeVehicleObbOverlap,
+  evaluateAiForwardBrake,
+  getTrafficVehicleDimensions,
+  getVehicleWorldCorners,
+  shouldTriggerRoadEgo,
+} from './trafficPhysics';
 import {
   CHASE_GUN_RANGE,
   CHASE_SLAP_RANGE,
@@ -2230,6 +2240,194 @@ test('Kerala ambient audio weights temple bells, tea stall chatter, monsoon rain
   assert.equal(fired.state.lastSoundId, fired.triggeredSound);
   assert.equal(fired.state.triggerCount, 1);
   assert.ok(fired.state.cooldownSec >= 6.8 && fired.state.cooldownSec <= 13.5);
+});
+
+test('AI traffic stays strictly on paved asphalt at all U-turn angles, separates cleanly via 2D OBB SAT without overlapping, and never fires Komban Road Ego while on foot', () => {
+  const southRoad = TOWN_ROADS.find((r) => r.id === 'southRoadEW')!;
+  const southBounds = getRoadBounds(southRoad);
+
+  // 1. Even a 5.7m school bus rotating 360° on narrowest 8.5m road stays 100% inside paved asphalt!
+  for (const angle of [0, Math.PI / 6, Math.PI / 4, Math.PI / 2, (3 * Math.PI) / 4, Math.PI]) {
+    const clamped = clampAiVehicleToRoad(20, 42, angle, 'school_bus', southRoad);
+    assert.equal(clamped.clamped, true, 'Bus off-road on grass must be clamped back onto asphalt');
+    const corners = getVehicleWorldCorners(clamped.x, clamped.z, angle, 'school_bus');
+    for (const c of corners) {
+      assert.ok(
+        c.z >= southBounds.minZ - 0.01 && c.z <= southBounds.maxZ + 0.01,
+        `Bus corner z=${c.z.toFixed(2)} spilled off southRoadEW [${southBounds.minZ}, ${southBounds.maxZ}] at angle=${angle.toFixed(2)}`,
+      );
+      assert.ok(
+        c.x >= southBounds.minX - 0.01 && c.x <= southBounds.maxX + 0.01,
+        `Bus corner x=${c.x.toFixed(2)} spilled off southRoadEW X bounds`,
+      );
+    }
+  }
+
+  // 2. Sharp U-turns slow down significantly so vehicles never overshoot into grass
+  const uTurn = computeAiTurnSteering(Math.PI / 2, -5, 0, 0.05);
+  assert.ok(uTurn.turnSpeedScale <= 0.25, `Expected sharp U-turn speedScale <= 0.25, got ${uTurn.turnSpeedScale}`);
+  const straight = computeAiTurnSteering(Math.PI / 2, 10, 0, 0.05);
+  assert.equal(straight.turnSpeedScale, 1);
+
+  // 3. 2D OBB SAT: two full-size buses passing in opposite lanes (4.4m apart) do NOT collide,
+  //    while an angled bus clipping a green jeep IS detected and separated cleanly!
+  const parallelGap = computeVehicleObbOverlap(
+    { x: 0, z: 31.8, yaw: Math.PI / 2, type: 'school_bus' },
+    { x: 0, z: 36.2, yaw: -Math.PI / 2, type: 'private_bus' },
+  );
+  assert.equal(parallelGap.overlapped, false, 'Opposite-lane buses 4.4m apart must pass cleanly without false collision');
+
+  const busVsJeep = computeVehicleObbOverlap(
+    { x: 10, z: 35.0, yaw: 0.9, type: 'school_bus' },
+    { x: 12.2, z: 34.4, yaw: Math.PI / 2, type: 'jeep' },
+  );
+  assert.equal(busVsJeep.overlapped, true, 'Angled school bus intersecting green jeep must be detected');
+  const sepBus = { x: 10 - busVsJeep.pushX * 0.52, z: 35.0 - busVsJeep.pushZ * 0.52, yaw: 0.9, type: 'school_bus' as const };
+  const sepJeep = { x: 12.2 + busVsJeep.pushX * 0.52, z: 34.4 + busVsJeep.pushZ * 0.52, yaw: Math.PI / 2, type: 'jeep' as const };
+  assert.equal(
+    computeVehicleObbOverlap(sepBus, sepJeep, 0.1).overlapped,
+    false,
+    'After MTV push, bus and jeep must no longer overlap',
+  );
+
+  // 4. Multi-second simulation of South Resort Blvd (pink scooter + yellow school bus + green jeep)
+  //    through U-turns guarantees zero grass intrusion & zero vehicle overlaps!
+  const southRoutes = TOWN_TRAFFIC_ROUTES.filter((r) => r.roadId === 'southRoadEW');
+  const typeMap: Record<string, 'scooter' | 'school_bus' | 'jeep'> = {
+    veh_kochi_scooter: 'scooter',
+    veh_school_bus: 'school_bus',
+    veh_wayanad_jeep: 'jeep',
+  };
+  const simVehicles = southRoutes.map((r) => {
+    const a = r.loop[r.wpIndex];
+    const b = r.loop[(r.wpIndex + 1) % r.loop.length];
+    return {
+      type: typeMap[r.catalogId],
+      loop: r.loop,
+      wpIndex: (r.wpIndex + 1) % r.loop.length,
+      x: a.x + (b.x - a.x) * r.startLerp,
+      z: a.z + (b.z - a.z) * r.startLerp,
+      yaw: Math.atan2(b.x - a.x, b.z - a.z),
+      speed: r.cruise,
+      cruise: r.cruise,
+    };
+  });
+
+  // Start the school bus right near a U-turn corner (x=-85) to stress-test the turnaround!
+  simVehicles[1].x = -84;
+  simVehicles[1].z = 36.2;
+  simVehicles[1].wpIndex = 3;
+
+  const dt = 0.05;
+  for (let step = 0; step < 300; step++) {
+    for (let i = 0; i < simVehicles.length; i++) {
+      const v = simVehicles[i];
+      const wp = v.loop[v.wpIndex];
+      const dx = wp.x - v.x;
+      const dz = wp.z - v.z;
+      if (Math.hypot(dx, dz) < 2.2) {
+        v.wpIndex = (v.wpIndex + 1) % v.loop.length;
+      }
+      const steer = computeAiTurnSteering(v.yaw, dx, dz, dt);
+      v.yaw = steer.nextYaw;
+      let target = v.cruise * steer.turnSpeedScale;
+      for (let j = 0; j < simVehicles.length; j++) {
+        if (i === j) continue;
+        const o = simVehicles[j];
+        const oDims = getTrafficVehicleDimensions(o.type);
+        const br = evaluateAiForwardBrake(v.x, v.z, v.yaw, v.type, o.x, o.z, oDims.halfW, oDims.halfL);
+        if (br.shouldStop) target = 0;
+        else target *= br.speedScale;
+      }
+      v.speed += (target - v.speed) * Math.min(1, dt * 6.5);
+      const nx = v.x + Math.sin(v.yaw) * v.speed * dt;
+      const nz = v.z + Math.cos(v.yaw) * v.speed * dt;
+      const cl = clampAiVehicleToRoad(nx, nz, v.yaw, v.type, southRoad);
+      v.x = cl.x;
+      v.z = cl.z;
+    }
+    for (let i = 0; i < simVehicles.length; i++) {
+      for (let j = i + 1; j < simVehicles.length; j++) {
+        const ov = computeVehicleObbOverlap(simVehicles[i], simVehicles[j], 0.16);
+        if (ov.overlapped) {
+          simVehicles[i].x -= ov.pushX * 0.52;
+          simVehicles[i].z -= ov.pushZ * 0.52;
+          simVehicles[j].x += ov.pushX * 0.52;
+          simVehicles[j].z += ov.pushZ * 0.52;
+          const ci = clampAiVehicleToRoad(simVehicles[i].x, simVehicles[i].z, simVehicles[i].yaw, simVehicles[i].type, southRoad);
+          const cj = clampAiVehicleToRoad(simVehicles[j].x, simVehicles[j].z, simVehicles[j].yaw, simVehicles[j].type, southRoad);
+          simVehicles[i].x = ci.x;
+          simVehicles[i].z = ci.z;
+          simVehicles[j].x = cj.x;
+          simVehicles[j].z = cj.z;
+        }
+      }
+    }
+    // Verify EVERY single frame: 0 corners on grass & 0 vehicle-to-vehicle overlaps!
+    for (const v of simVehicles) {
+      for (const c of getVehicleWorldCorners(v.x, v.z, v.yaw, v.type)) {
+        assert.ok(
+          c.z >= southBounds.minZ - 0.02 && c.z <= southBounds.maxZ + 0.02,
+          `Step ${step}: ${v.type} went onto grass (z=${c.z.toFixed(2)})`,
+        );
+      }
+    }
+    for (let i = 0; i < simVehicles.length; i++) {
+      for (let j = i + 1; j < simVehicles.length; j++) {
+        assert.equal(
+          computeVehicleObbOverlap(simVehicles[i], simVehicles[j], 0.02).overlapped,
+          false,
+          `Step ${step}: ${simVehicles[i].type} overlapped ${simVehicles[j].type}`,
+        );
+      }
+    }
+  }
+
+  // 5. Road Ego ("Don't honk at me!") NEVER triggers while on foot or for yellow school buses
+  assert.equal(
+    shouldTriggerRoadEgo({
+      isDrivingGroundVehicle: false,
+      aiType: 'private_bus',
+      aiIsAuto: false,
+      aiIsBus: true,
+      distPlayer: 3.5,
+      roadEgoCooldown: 0,
+    }),
+    null,
+  );
+  assert.equal(
+    shouldTriggerRoadEgo({
+      isDrivingGroundVehicle: true,
+      aiType: 'school_bus',
+      aiIsAuto: false,
+      aiIsBus: true,
+      distPlayer: 3.5,
+      roadEgoCooldown: 0,
+    }),
+    null,
+  );
+  assert.equal(
+    shouldTriggerRoadEgo({
+      isDrivingGroundVehicle: true,
+      aiType: 'private_bus',
+      aiIsAuto: false,
+      aiIsBus: true,
+      distPlayer: 4.5,
+      roadEgoCooldown: 0,
+    }),
+    'bus',
+  );
+  assert.equal(
+    shouldTriggerRoadEgo({
+      isDrivingGroundVehicle: true,
+      aiType: 'auto',
+      aiIsAuto: true,
+      aiIsBus: false,
+      distPlayer: 4.5,
+      roadEgoCooldown: 0,
+    }),
+    'auto',
+  );
 });
 
 

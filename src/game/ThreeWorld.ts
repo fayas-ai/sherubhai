@@ -120,6 +120,7 @@ import {
 } from './physicsPropModels';
 import {
   AUX_PAVED_ROADS,
+  RoadSegmentDef,
   SHERU_STATUE_ROUNDABOUT,
   SirenSource,
   TOWN_CROWD_ROUTES,
@@ -135,6 +136,14 @@ import {
   isPointOnAnyRoad,
   snapPointToNearestRoad,
 } from './roadNetwork';
+import {
+  clampAiVehicleToRoad,
+  computeAiTurnSteering,
+  computeVehicleObbOverlap,
+  evaluateAiForwardBrake,
+  getTrafficVehicleDimensions,
+  shouldTriggerRoadEgo,
+} from './trafficPhysics';
 import { VehicleModelRig, createDetailedVehicleModel } from './vehicleModels';
 import {
   createGrassTexture,
@@ -246,6 +255,9 @@ const _ambientCtx: AmbientContext = {
   indoors: false,
   airborne: false,
 };
+const ROAD_BY_ID: ReadonlyMap<string, RoadSegmentDef> = new Map(
+  TOWN_ROADS.map((r) => [r.id, r]),
+);
 
 function freezeStaticHierarchy(obj: THREE.Object3D): void {
   obj.updateMatrixWorld(true);
@@ -2708,8 +2720,60 @@ export class ThreeWorld {
   public startPurseChaseEvent(): { victimName: string } {
     // Exit vehicle gently if player triggers chase while parked? Keep it seamless even on foot or near car!
     const raw = startPurseChase(this.playerX, this.playerZ, this.playerYaw, this.chaseSeed++);
-    const safeVictim = resolveCircleWorldCollision(raw.victimX, raw.victimZ, 0.75, this.colliders);
-    const safeThief = resolveCircleWorldCollision(raw.thiefX, raw.thiefZ, 0.75, this.colliders);
+    const safeVictimWall = resolveCircleWorldCollision(raw.victimX, raw.victimZ, 0.75, this.colliders);
+    const safeThiefWall = resolveCircleWorldCollision(raw.thiefX, raw.thiefZ, 0.75, this.colliders);
+
+    // Ensure neither the victim girl nor the thief spawns inside any parked or moving vehicle!
+    const spawnObbs = this.solidObbsScratch;
+    spawnObbs.length = 0;
+    for (const v of this.liveVehicles) {
+      if (!v.mesh.visible || v.y > 2.5) continue;
+      pushVehicleSolidOBBs(spawnObbs, v.type, v.x, v.y, v.z, v.yaw);
+    }
+    for (const ai of this.aiTraffic) {
+      if (!ai.active) continue;
+      pushVehicleSolidOBBs(spawnObbs, ai.type, ai.x, 0, ai.z, ai.yaw);
+    }
+    const safeVictimBody = resolveCharacterSolidBodies(
+      safeVictimWall.x,
+      0,
+      safeVictimWall.z,
+      0,
+      0,
+      0.7,
+      spawnObbs,
+      [],
+      undefined,
+      undefined,
+      1.9,
+      3,
+    );
+    const safeVictim = resolveCircleWorldCollision(
+      safeVictimBody.x,
+      safeVictimBody.z,
+      0.7,
+      this.colliders,
+    );
+    const safeThiefBody = resolveCharacterSolidBodies(
+      safeThiefWall.x,
+      0,
+      safeThiefWall.z,
+      0,
+      0,
+      0.65,
+      spawnObbs,
+      [],
+      undefined,
+      undefined,
+      1.9,
+      3,
+    );
+    const safeThief = resolveCircleWorldCollision(
+      safeThiefBody.x,
+      safeThiefBody.z,
+      0.65,
+      this.colliders,
+    );
     this.purseChase = {
       ...raw,
       victimX: safeVictim.x,
@@ -5293,12 +5357,11 @@ export class ThreeWorld {
           ? computeSirenYieldBehavior(ai.x, ai.z, ai.yaw, sirenSources)
           : { yielding: false, pullOverX: 0, pullOverZ: 0, speedScale: 1, hazardFlash: false };
 
-        const desiredYaw = Math.atan2(dx, dz);
-        const yawDiff = Math.atan2(Math.sin(desiredYaw - ai.yaw), Math.cos(desiredYaw - ai.yaw));
-        ai.yaw += THREE.MathUtils.clamp(yawDiff, -3.2 * dt, 3.2 * dt);
+        const turnSteer = computeAiTurnSteering(ai.yaw, dx, dz, dt);
+        ai.yaw = turnSteer.nextYaw;
 
         // Traffic light check approaching Main Junction (0, -4)
-        let targetSpeed = ai.cruiseSpeed;
+        let targetSpeed = ai.cruiseSpeed * turnSteer.turnSpeedScale;
         const distJunction = Math.hypot(ai.x, ai.z + 4);
         if (distJunction > 7.5 && distJunction < 14.5) {
           const movingNS = Math.abs(Math.cos(ai.yaw)) > 0.65;
@@ -5310,50 +5373,107 @@ export class ThreeWorld {
           }
         }
 
+        const assignedRoad = ROAD_BY_ID.get(ai.roadId);
+
         if (yieldInfo.yielding) {
           // Pull smoothly aside toward the outer paved curb shoulder & stop so siren passes cleanly!
           targetSpeed *= yieldInfo.speedScale;
-          const pullStep = Math.min(1, dt * 3.8);
+          const pullStep = Math.min(1, dt * 3.2);
           const candidateX = ai.x + yieldInfo.pullOverX * pullStep;
           const candidateZ = ai.z + yieldInfo.pullOverZ * pullStep;
-          const roadEdge = constrainVehicleToDrivableRoads(ai.x, ai.z, candidateX, candidateZ);
+          const roadEdge = assignedRoad
+            ? clampAiVehicleToRoad(candidateX, candidateZ, ai.yaw, ai.type, assignedRoad)
+            : constrainVehicleToDrivableRoads(ai.x, ai.z, candidateX, candidateZ);
           ai.x = roadEdge.x;
           ai.z = roadEdge.z;
         } else if (emergencyYieldActive && !ai.isEmergency) {
           targetSpeed *= 0.28;
         }
 
-        // Forward bumper-to-bumper safety radar: brake cleanly for other AI traffic, parked ground vehicles & player!
+        // Forward bumper-to-bumper safety radar: brake cleanly for player, AI traffic, parked vehicles & chase actors!
         const aiFwdX = Math.sin(ai.yaw);
         const aiFwdZ = Math.cos(ai.yaw);
-        const aiRightX = Math.cos(ai.yaw);
-        const aiRightZ = -Math.sin(ai.yaw);
 
         const distPlayer = Math.hypot(ai.x - this.playerX, ai.z - this.playerZ);
-        if (distPlayer < 8.5 && this.activeVehicleId) {
-          const pdx = this.playerX - ai.x;
-          const pdz = this.playerZ - ai.z;
-          const pFwd = pdx * aiFwdX + pdz * aiFwdZ;
-          const pLat = Math.abs(pdx * aiRightX + pdz * aiRightZ);
-          if (pFwd > 0.5 && pLat < 2.6) {
-            targetSpeed = pFwd < 5.4 ? 0 : targetSpeed * 0.22;
+        const activePlayerVeh = this.activeVehicleId
+          ? this.liveVehicles.find((v) => v.id === this.activeVehicleId)
+          : null;
+        const isDrivingGroundVehicle = Boolean(activePlayerVeh && !activePlayerVeh.isAircraft);
+
+        if (distPlayer < 12 && (!activePlayerVeh || !activePlayerVeh.isAircraft || activePlayerVeh.y < 2.2)) {
+          const playerDims = activePlayerVeh
+            ? getTrafficVehicleDimensions(activePlayerVeh.type)
+            : { halfW: 0.62, halfL: 0.62 };
+          const pBrake = evaluateAiForwardBrake(
+            ai.x,
+            ai.z,
+            ai.yaw,
+            ai.type,
+            this.playerX,
+            this.playerZ,
+            playerDims.halfW,
+            playerDims.halfL,
+          );
+          if (pBrake.shouldStop) {
+            targetSpeed = 0;
+          } else if (pBrake.speedScale < 1) {
+            targetSpeed *= pBrake.speedScale;
           }
         }
 
-        // Check other AI traffic vehicles directly ahead in our lane
+        // Brake cleanly for active purse chase victim & thief so buses never plow straight through them!
+        if (targetSpeed > 0.1 && this.purseChase.active) {
+          const tBrake = evaluateAiForwardBrake(
+            ai.x,
+            ai.z,
+            ai.yaw,
+            ai.type,
+            this.purseChase.thiefX,
+            this.purseChase.thiefZ,
+            0.55,
+            0.55,
+          );
+          if (tBrake.shouldStop) targetSpeed = 0;
+          else targetSpeed *= tBrake.speedScale;
+
+          if (targetSpeed > 0.1) {
+            const vBrake = evaluateAiForwardBrake(
+              ai.x,
+              ai.z,
+              ai.yaw,
+              ai.type,
+              this.purseChase.victimX,
+              this.purseChase.victimZ,
+              0.55,
+              0.55,
+            );
+            if (vBrake.shouldStop) targetSpeed = 0;
+            else targetSpeed *= vBrake.speedScale;
+          }
+        }
+
+        // Check other AI traffic vehicles ahead or turning into our path
         if (targetSpeed > 0.1) {
           for (let j = 0; j < this.aiTraffic.length; j++) {
             const other = this.aiTraffic[j];
             if (other === ai || !other.active) continue;
-            const odx = other.x - ai.x;
-            const odz = other.z - ai.z;
-            if (odx * odx + odz * odz > 121) continue;
-            const oFwd = odx * aiFwdX + odz * aiFwdZ;
-            const oLat = Math.abs(odx * aiRightX + odz * aiRightZ);
-            const minGap = ai.isBus || other.isBus ? 8.2 : 6.4;
-            if (oFwd > 0.8 && oFwd < minGap + 3.2 && oLat < 2.15) {
-              targetSpeed = oFwd < minGap ? 0 : Math.min(targetSpeed, other.speed * 0.75);
-              if (targetSpeed === 0) break;
+            const oDims = getTrafficVehicleDimensions(other.type);
+            const oBrake = evaluateAiForwardBrake(
+              ai.x,
+              ai.z,
+              ai.yaw,
+              ai.type,
+              other.x,
+              other.z,
+              oDims.halfW,
+              oDims.halfL,
+            );
+            if (oBrake.shouldStop) {
+              targetSpeed = 0;
+              break;
+            }
+            if (oBrake.speedScale < 1) {
+              targetSpeed = Math.min(targetSpeed, Math.max(other.speed * 0.8, ai.cruiseSpeed * oBrake.speedScale));
             }
           }
         }
@@ -5363,21 +5483,31 @@ export class ThreeWorld {
           for (let j = 0; j < this.liveVehicles.length; j++) {
             const lv = this.liveVehicles[j];
             if (!lv.mesh.visible || lv.isAircraft || lv.id === this.activeVehicleId) continue;
-            const ldx = lv.x - ai.x;
-            const ldz = lv.z - ai.z;
-            if (ldx * ldx + ldz * ldz > 100) continue;
-            const lFwd = ldx * aiFwdX + ldz * aiFwdZ;
-            const lLat = Math.abs(ldx * aiRightX + ldz * aiRightZ);
-            if (lFwd > 0.8 && lFwd < 8.5 && lLat < 2.2) {
-              targetSpeed = lFwd < 5.8 ? 0 : targetSpeed * 0.25;
-              if (targetSpeed === 0) break;
+            const lDims = getTrafficVehicleDimensions(lv.type);
+            const lBrake = evaluateAiForwardBrake(
+              ai.x,
+              ai.z,
+              ai.yaw,
+              ai.type,
+              lv.x,
+              lv.z,
+              lDims.halfW,
+              lDims.halfL,
+            );
+            if (lBrake.shouldStop) {
+              targetSpeed = 0;
+              break;
+            }
+            if (lBrake.speedScale < 1) {
+              targetSpeed *= lBrake.speedScale;
             }
           }
         }
 
-        ai.speed += (targetSpeed - ai.speed) * Math.min(1, dt * 5.6);
-        const nextAiX = ai.x + aiFwdX * ai.speed * dt;
-        const nextAiZ = ai.z + aiFwdZ * ai.speed * dt;
+        ai.speed += (targetSpeed - ai.speed) * Math.min(1, dt * 6.5);
+        let nextAiX = ai.x + aiFwdX * ai.speed * dt;
+        let nextAiZ = ai.z + aiFwdZ * ai.speed * dt;
+
         // Keep AI traffic clear of Golden Sheru Statue pedestal at (0, -4)
         const dStatue = Math.hypot(
           nextAiX - SHERU_STATUE_ROUNDABOUT.x,
@@ -5388,27 +5518,38 @@ export class ThreeWorld {
             nextAiX - SHERU_STATUE_ROUNDABOUT.x,
             nextAiZ - SHERU_STATUE_ROUNDABOUT.z,
           );
-          ai.x = SHERU_STATUE_ROUNDABOUT.x + Math.sin(ang) * (SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.38);
-          ai.z = SHERU_STATUE_ROUNDABOUT.z + Math.cos(ang) * (SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.38);
+          nextAiX =
+            SHERU_STATUE_ROUNDABOUT.x +
+            Math.sin(ang) * (SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.38);
+          nextAiZ =
+            SHERU_STATUE_ROUNDABOUT.z +
+            Math.cos(ang) * (SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.38);
+        }
+
+        // Strict road-asphalt OBB containment: keeps EVERY AI bus/jeep/scooter 100% off green grass!
+        if (assignedRoad) {
+          const clamped = clampAiVehicleToRoad(nextAiX, nextAiZ, ai.yaw, ai.type, assignedRoad);
+          ai.x = clamped.x;
+          ai.z = clamped.z;
         } else {
           ai.x = nextAiX;
           ai.z = nextAiZ;
         }
 
-        ai.rig.root.position.set(ai.x, 0, ai.z);
-        ai.rig.root.rotation.y = ai.yaw;
-        // Dynamic LOD wheel-spin culling based on active device LOD profile
-        const wheelAnimDist = this.lodState ? this.lodState.distances.vehicleAnimDist : 66;
-        if (ai.rig.root.visible && distPlayer <= wheelAnimDist) {
-          for (const w of ai.rig.wheels) w.rotation.x += ai.speed * dt * 2.2;
-        }
-
-        // Auto & Bus Driver Road Ego when Sheru gets close on the road!
-        if ((ai.isAuto || ai.isBus) && distPlayer < 7.2 && this.roadEgoCooldown <= 0) {
+        // Auto & Bus Driver Road Ego ONLY when Sheru is actively driving a ground vehicle on the road!
+        const roadEgoKind = shouldTriggerRoadEgo({
+          isDrivingGroundVehicle,
+          aiType: ai.type,
+          aiIsAuto: ai.isAuto,
+          aiIsBus: ai.isBus,
+          distPlayer,
+          roadEgoCooldown: this.roadEgoCooldown,
+        });
+        if (roadEgoKind) {
           this.roadEgoCooldown = 14;
-          if (ai.isBus) soundEngine.playBusHorn();
+          if (roadEgoKind === 'bus') soundEngine.playBusHorn();
           else soundEngine.playHorn();
-          this.callbacks.onRoadEgo(ai.isBus ? 'bus' : 'auto');
+          this.callbacks.onRoadEgo(roadEgoKind);
         }
 
         // Safe cartoon crossing hit protection: if AI vehicle bumps on-foot player -> call 108 Ambulance!
@@ -5434,6 +5575,56 @@ export class ThreeWorld {
           soundEngine.playBrakeScreech();
           this.spawnParticleBurst(this.playerX, 1.5, this.playerZ, 16, 0xef4444);
           this.callbacks.onEmergencyIncident('crossing_hit', this.playerX, this.playerZ);
+        }
+      }
+
+      // Solid 2D OBB SAT separation between AI traffic pairs so buses, jeeps & scooters NEVER clip into each other!
+      for (let i = 0; i < this.aiTraffic.length; i++) {
+        const a = this.aiTraffic[i];
+        if (!a.active) continue;
+        for (let j = i + 1; j < this.aiTraffic.length; j++) {
+          const b = this.aiTraffic[j];
+          if (!b.active) continue;
+          const ov = computeVehicleObbOverlap(a, b, 0.16);
+          if (!ov.overlapped) continue;
+
+          const halfPushX = ov.pushX * 0.52;
+          const halfPushZ = ov.pushZ * 0.52;
+          a.x -= halfPushX;
+          a.z -= halfPushZ;
+          b.x += halfPushX;
+          b.z += halfPushZ;
+
+          const roadA = ROAD_BY_ID.get(a.roadId);
+          if (roadA) {
+            const cA = clampAiVehicleToRoad(a.x, a.z, a.yaw, a.type, roadA);
+            a.x = cA.x;
+            a.z = cA.z;
+          }
+          const roadB = ROAD_BY_ID.get(b.roadId);
+          if (roadB) {
+            const cB = clampAiVehicleToRoad(b.x, b.z, b.yaw, b.type, roadB);
+            b.x = cB.x;
+            b.z = cB.z;
+          }
+
+          // Yield speed smoothly so vehicles never jam noses permanently
+          if (a.speed >= b.speed) a.speed *= 0.35;
+          else b.speed *= 0.35;
+        }
+      }
+
+      // Sync final separated & road-clamped transforms + LOD wheel rotation to 3D meshes
+      const wheelAnimDist = this.lodState ? this.lodState.distances.vehicleAnimDist : 66;
+      for (const ai of this.aiTraffic) {
+        if (!ai.active) continue;
+        ai.rig.root.position.set(ai.x, 0, ai.z);
+        ai.rig.root.rotation.y = ai.yaw;
+        if (ai.rig.root.visible) {
+          const dPlayer = Math.hypot(ai.x - this.playerX, ai.z - this.playerZ);
+          if (dPlayer <= wheelAnimDist) {
+            for (const w of ai.rig.wheels) w.rotation.x += ai.speed * dt * 2.2;
+          }
         }
       }
     }
@@ -5864,9 +6055,72 @@ export class ThreeWorld {
           if (this.victimRig) this.victimRig.root.visible = false;
           this.autoChaseTimer = 45;
         } else {
-          const safeThief = resolveCircleWorldCollision(
+          const safeThiefWall = resolveCircleWorldCollision(
             stepped.state.thiefX,
             stepped.state.thiefZ,
+            0.55,
+            this.colliders,
+          );
+          // Solid vehicle OBB collision for Pickpocket Thief & Victim so nobody EVER clips through a bus or car!
+          const chaseObbs = this.solidObbsScratch;
+          chaseObbs.length = 0;
+          for (const v of this.liveVehicles) {
+            if (!v.mesh.visible || v.y > 2.5) continue;
+            const d2 = (v.x - safeThiefWall.x) ** 2 + (v.z - safeThiefWall.z) ** 2;
+            const dv2 = (v.x - stepped.state.victimX) ** 2 + (v.z - stepped.state.victimZ) ** 2;
+            if (d2 > 225 && dv2 > 225) continue;
+            pushVehicleSolidOBBs(chaseObbs, v.type, v.x, v.y, v.z, v.yaw);
+          }
+          for (const ai of this.aiTraffic) {
+            if (!ai.active) continue;
+            const d2 = (ai.x - safeThiefWall.x) ** 2 + (ai.z - safeThiefWall.z) ** 2;
+            const dv2 = (ai.x - stepped.state.victimX) ** 2 + (ai.z - stepped.state.victimZ) ** 2;
+            if (d2 > 225 && dv2 > 225) continue;
+            pushVehicleSolidOBBs(chaseObbs, ai.type, ai.x, 0, ai.z, ai.yaw);
+          }
+          const safeThiefBody =
+            chaseObbs.length > 0
+              ? resolveCharacterSolidBodies(
+                  safeThiefWall.x,
+                  0,
+                  safeThiefWall.z,
+                  0,
+                  0,
+                  0.62,
+                  chaseObbs,
+                  [],
+                  this.purseChase.thiefX,
+                  this.purseChase.thiefZ,
+                  1.9,
+                  2,
+                )
+              : safeThiefWall;
+          const safeThief = resolveCircleWorldCollision(
+            safeThiefBody.x,
+            safeThiefBody.z,
+            0.55,
+            this.colliders,
+          );
+          const safeVictimBody =
+            chaseObbs.length > 0
+              ? resolveCharacterSolidBodies(
+                  stepped.state.victimX,
+                  0,
+                  stepped.state.victimZ,
+                  0,
+                  0,
+                  0.62,
+                  chaseObbs,
+                  [],
+                  this.purseChase.victimX,
+                  this.purseChase.victimZ,
+                  1.9,
+                  2,
+                )
+              : { x: stepped.state.victimX, z: stepped.state.victimZ };
+          const safeVictim = resolveCircleWorldCollision(
+            safeVictimBody.x,
+            safeVictimBody.z,
             0.55,
             this.colliders,
           );
@@ -5892,6 +6146,8 @@ export class ThreeWorld {
             ...stepped.state,
             thiefX: safeThief.x,
             thiefZ: safeThief.z,
+            victimX: safeVictim.x,
+            victimZ: safeVictim.z,
             droppedItem: nextDroppedItem,
           };
 
