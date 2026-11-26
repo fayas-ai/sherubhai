@@ -58,6 +58,7 @@ import {
   createInitialWeatherState,
   getWeatherVisualConfig,
 } from './game/weatherLogic';
+import { detectCurrentRoadName } from './game/roadNetwork';
 import { PurseChaseAction } from './game/chaseLogic';
 import {
   loadProgressFromIndexedDb,
@@ -138,6 +139,7 @@ export default function App() {
     speed: 0,
     speedKmh: 0,
     district: 'Main Junction',
+    roadName: detectCurrentRoadName(PLAYER_SPAWN.x, PLAYER_SPAWN.z),
     inVehicleId: null,
     inVehicleName: null,
     nearby: null,

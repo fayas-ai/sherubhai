@@ -28,6 +28,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Shirt,
+  Signpost,
   Siren,
   Sparkles,
   Sun,
@@ -771,6 +772,25 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               <Pause className="w-4 h-4" />
             </button>
           </div>
+
+          {/* Subtle Top-Right Current Road Name Banner (auto-hides when Town Menu is open or off-road) */}
+          {!menuOpen && hud.roadName && (
+            <div
+              data-testid="hud-road-banner"
+              aria-live="polite"
+              aria-label={`Current road: ${hud.roadName}`}
+              className="pointer-events-none mt-1.5 flex items-center gap-1.5 max-w-[240px] sm:max-w-[270px] rounded-lg bg-[#0f1c16]/76 backdrop-blur-sm border border-[#d4a12a]/40 px-2.5 py-1 shadow-[0_3px_12px_rgba(0,0,0,0.35)] transition-all duration-200"
+            >
+              <Signpost className="w-3.5 h-3.5 text-[#ffd166]/85 shrink-0" aria-hidden="true" />
+              <span
+                data-testid="hud-road-name"
+                className="truncate text-[11px] font-semibold tracking-wide text-[#f6f0de]/92 leading-tight"
+                title={hud.roadName}
+              >
+                {hud.roadName}
+              </span>
+            </div>
+          )}
 
           {/* Collapsible Town Menu Popover (All Secondary Actions Organized Off-Screen Until Needed) */}
           {menuOpen && (

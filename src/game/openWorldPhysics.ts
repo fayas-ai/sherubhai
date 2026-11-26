@@ -91,7 +91,7 @@ export interface SurfaceSample {
  * Samples the open-world physical ground height, slope normal, grip friction,
  * and surface type at any world (x, z) coordinate.
  */
-export function sampleWorldSurface(x: number, z: number): SurfaceSample {
+export function sampleWorldSurface(x: number, z: number, currentY?: number): SurfaceSample {
   for (let i = 0; i < WORLD_RAMPS.length; i++) {
     const r = WORLD_RAMPS[i];
     const dx = x - r.x;
@@ -158,7 +158,7 @@ export function sampleWorldSurface(x: number, z: number): SurfaceSample {
   }
 
   // Walkable Railway Station Platforms & Elevated Foot-Overbridge Skybridges
-  const railElev = sampleRailwayElevation(x, z);
+  const railElev = sampleRailwayElevation(x, z, currentY);
   if (railElev > 0.01) {
     return {
       groundY: railElev,
@@ -282,7 +282,7 @@ export function stepCharacterPhysics(
   const safeDt = Math.min(Math.max(dt, 0.001), 0.05);
   let { x, y, z, vx, vy, vz, yaw, coyoteTimer, jumpBufferTimer } = state;
 
-  const prevSurface = sampleWorldSurface(x, z);
+  const prevSurface = sampleWorldSurface(x, z, y);
   const wasGrounded = y <= prevSurface.groundY + 0.08 && vy <= 0.6;
 
   // Desired horizontal velocity with surface-specific speed & momentum
@@ -350,7 +350,14 @@ export function stepCharacterPhysics(
   x = col.x;
   z = col.z;
 
-  const newSurface = sampleWorldSurface(x, z);
+  // Deep Arabian Sea boundary: allow wading into shallow shoreline surf, but stop walking out across deep ocean water
+  const maxShoreWadeZ = BEACH_ZONE.shorelineZ + 2.4;
+  if (z > maxShoreWadeZ && Math.abs(x) <= BEACH_ZONE.maxX + 16) {
+    z = maxShoreWadeZ;
+    if (vz > 0) vz = 0;
+  }
+
+  const newSurface = sampleWorldSurface(x, z, y);
 
   // Ramp launch: if sprinting off the top lip of a ramp, carry real upward vertical momentum!
   if (
@@ -496,7 +503,7 @@ export function stepVehicleChassisPhysics(
   } = state;
 
   const prevSpeed = speed;
-  const prevSurface = sampleWorldSurface(x, z);
+  const prevSurface = sampleWorldSurface(x, z, y);
   const wasGrounded = grounded && y <= prevSurface.groundY + 0.14;
 
   if (wasGrounded) {
@@ -553,7 +560,7 @@ export function stepVehicleChassisPhysics(
   x += vx * safeDt;
   z += vz * safeDt;
 
-  const newSurface = sampleWorldSurface(x, z);
+  const newSurface = sampleWorldSurface(x, z, y);
 
   // Detect launching off the high lip of a stunt ramp!
   let launchedOffRamp = false;
@@ -1077,7 +1084,7 @@ export function stepRigidBodyProps(
     }
 
     // Ground & Ramp surface contact + restitution bounce + rolling torque
-    const surf = sampleWorldSurface(p.x, p.z);
+    const surf = sampleWorldSurface(p.x, p.z, p.y - p.halfHeight);
     const floorY = surf.groundY + p.halfHeight;
 
     if (p.y <= floorY) {

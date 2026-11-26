@@ -569,6 +569,7 @@ export interface HudSnapshot {
   speed: number;
   speedKmh: number;
   district: string;
+  roadName: string | null;
   inVehicleId: string | null;
   inVehicleName: string | null;
   inVehicleIsAircraft?: boolean;

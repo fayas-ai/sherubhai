@@ -689,7 +689,7 @@ export function worldToStationLocal(
  * lets Sheru Bhai walk onto Platform 1 (y = 0.55), climb the side stairs up to
  * the covered skybridge (y = BRIDGE_DECK_Y = 4.9m) over both tracks, and descend to Platform B!
  */
-export function sampleRailwayElevation(x: number, z: number): number {
+export function sampleRailwayElevation(x: number, z: number, currentY?: number): number {
   let maxY = 0;
   for (const st of RAILWAY_STATIONS) {
     const { along, outward } = worldToStationLocal(st, x, z);
@@ -705,16 +705,25 @@ export function sampleRailwayElevation(x: number, z: number): number {
     }
 
     // Foot-Overbridge skybridge span across BOTH tracks at `along` in [-2.2, +2.2]
-    if (Math.abs(along) <= 2.2 && absOut <= 8.4) {
+    // Only act as floor support if actor is already near/above the bridge deck (climbed via stairs)
+    // so walking underneath at ground/platform height NEVER teleports up 4.9m!
+    if (
+      Math.abs(along) <= 2.2 &&
+      absOut <= 8.4 &&
+      (currentY === undefined || currentY >= BRIDGE_DECK_Y - 1.35)
+    ) {
       maxY = Math.max(maxY, BRIDGE_DECK_Y);
     }
 
     // Walkable Stair Ramps on BOTH Platform 1 (outward ~ -7.2) and Platform B (outward ~ +7.2)
     // Ramp runs from `along = 2.0` (top landing y = BRIDGE_DECK_Y) down to `along = 11.5` (platform y = 0.55)
+    // Enforce realistic step-up reach so walking beneath the upper stair flight doesn't pop through it
     if (absOut >= 5.6 && absOut <= 8.6 && along >= 1.6 && along <= 12.0) {
       const t = Math.max(0, Math.min(1, (11.5 - along) / 9.5));
       const stairY = 0.55 + t * (BRIDGE_DECK_Y - 0.55);
-      maxY = Math.max(maxY, stairY);
+      if (currentY === undefined || stairY <= currentY + 1.35) {
+        maxY = Math.max(maxY, stairY);
+      }
     }
   }
   return maxY;

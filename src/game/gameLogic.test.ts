@@ -21,6 +21,7 @@ import {
   computeRoadAutopilotTarget,
   computeSirenYieldBehavior,
   constrainVehicleToDrivableRoads,
+  detectCurrentRoadName,
   doesBoxOverlapAnyRoad,
   isPointOnAnyRoad,
   isPointOnDrivablePavement,
@@ -37,6 +38,14 @@ import {
   isPointInActivePuddle,
   stepWeatherCycle,
 } from './weatherLogic';
+import {
+  classifyDistrictAmbientZone,
+  computeNextAmbientIntervalSec,
+  createInitialAmbientSchedulerState,
+  getAmbientSoundPool,
+  pickWeightedAmbientSound,
+  stepAmbientScheduler,
+} from './ambientAudioLogic';
 import {
   CHASE_GUN_RANGE,
   CHASE_SLAP_RANGE,
@@ -98,6 +107,7 @@ import {
 } from './openWorldPhysics';
 import {
   BEACH_BENCHES,
+  BEACH_ZONE,
   BRIDGE_DECK_Y,
   PLATFORM_CENTER_OFFSET,
   RAILWAY_STATIONS,
@@ -165,6 +175,8 @@ import {
   PARKING_BAYS,
   PLAYER_SPAWN,
   RESORT_POOL_BOUNDS,
+  VEHICLES,
+  WORLD_COLLECTIBLES,
   WORLD_RADIUS,
   getDistrictAt,
 } from '../data/worldData';
@@ -1895,6 +1907,332 @@ test('Photo Mode [V] guards active gameplay, toggles HUD/camera freeze cleanly, 
   assert.equal(pm.active, true);
   assert.equal(pm.controlsVisible, true);
 });
+
+test('Top-right road banner detects town roads, auxiliary paved roads, intersection centerline priority, airport runway/apron, and returns null indoors/airborne/off-road', () => {
+  // 1. Main town roads
+  assert.equal(detectCurrentRoadName(0, 10), 'Main Junction Avenue');
+  assert.equal(detectCurrentRoadName(28, -4), 'Central Bazaar Road');
+  assert.equal(detectCurrentRoadName(24, 104), 'Marine Drive Coastal Road');
+  assert.equal(detectCurrentRoadName(-76, 12), 'West Cinema Ring Road');
+
+  // 2. Intersection centerline priority: closer to z=-4 centerline picks Central Bazaar Road over Main Junction Avenue
+  assert.equal(detectCurrentRoadName(3.5, -4.1), 'Central Bazaar Road');
+  assert.equal(detectCurrentRoadName(0.2, -1.0), 'Main Junction Avenue');
+
+  // 3. Auxiliary paved connector roads
+  assert.equal(detectCurrentRoadName(0, 165.5), 'Malabar Beachfront Parking Blvd');
+  assert.equal(detectCurrentRoadName(-46, 135), 'Malabar Beach West Access Road');
+  assert.equal(detectCurrentRoadName(-136, -22), 'Kochi Central Station Road');
+
+  // 4. Airport Runway & Apron
+  assert.equal(
+    detectCurrentRoadName(0, -146, { onRunway: true, onAirportTarmac: true }),
+    'Airport Runway 09/27',
+  );
+  assert.equal(
+    detectCurrentRoadName(-2, -129, { onRunway: false, onAirportTarmac: true }),
+    'Airport Taxiway & Apron',
+  );
+
+  // 5. Returns null indoors, airborne, or far off-road on beach sand
+  assert.equal(detectCurrentRoadName(0, 10, { inHospital: true }), null);
+  assert.equal(detectCurrentRoadName(0, 10, { airborne: true }), null);
+  assert.equal(detectCurrentRoadName(0, 184), null);
+});
+
+test('Inch-by-inch scene integrity & common-sense physics: zero road/building overlaps across all world entities, no foot-overbridge sky-teleport, deep sea surf clamp, and safe goat path', () => {
+  const colliders = getWorldColliders();
+
+  // 1. ZERO buildings or plots overlap ANY paved road (TOWN_ROADS + AUX_PAVED_ROADS)
+  for (const b of BUILDINGS) {
+    assert.equal(
+      doesBoxOverlapAnyRoad(b.x, b.z, b.width, b.depth, b.rotationY, 0.15),
+      null,
+      `Building "${b.id}" must not overlap any town or station spur road`,
+    );
+  }
+  for (const p of EMPTY_PLOTS) {
+    assert.equal(
+      doesBoxOverlapAnyRoad(p.x, p.z, p.width, p.depth, p.rotationY, 0.15),
+      null,
+      `Empty plot "${p.id}" must not overlap any paved road`,
+    );
+  }
+
+  // 2. ZERO named NPCs stand on paved roads or clip inside buildings
+  for (const npc of NPCS) {
+    assert.equal(
+      isPointOnAnyRoad(npc.x, npc.z, 0.25),
+      false,
+      `NPC "${npc.id}" (${npc.name}) at (${npc.x}, ${npc.z}) must stand off paved roads`,
+    );
+    assert.equal(
+      resolveCircleWorldCollision(npc.x, npc.z, 0.4, colliders).collided,
+      false,
+      `NPC "${npc.id}" (${npc.name}) at (${npc.x}, ${npc.z}) must not clip inside a building collider`,
+    );
+  }
+
+  // 3. Every ground vehicle spawns cleanly on paved road (never grass/buildings), and every aircraft spawns on airport tarmac
+  for (const v of VEHICLES) {
+    assert.equal(
+      resolveCircleWorldCollision(v.x, v.z, 0.9, colliders).collided,
+      false,
+      `Vehicle "${v.id}" at (${v.x}, ${v.z}) must not overlap a building collider`,
+    );
+    if (v.isAircraft) {
+      assert.equal(
+        isPointOnAirportTarmac(v.x, v.z),
+        true,
+        `Aircraft "${v.id}" must spawn on Kerala International Airport tarmac`,
+      );
+    } else {
+      assert.equal(
+        isPointOnAnyRoad(v.x, v.z, 0.2),
+        true,
+        `Ground vehicle "${v.id}" at (${v.x}, ${v.z}) must spawn on a paved road`,
+      );
+    }
+  }
+
+  // 4. ZERO street fixtures (Auto Stands, Bus Stops, Parking Bays, Ad Boards, Collectibles) clip into buildings or sit inside paved roads
+  for (const stand of AUTO_STANDS) {
+    assert.equal(doesBoxOverlapAnyRoad(stand.x, stand.z, 3.0, 1.8, stand.rotationY, 0.1), null);
+    assert.equal(
+      resolveCircleWorldCollision(stand.x, stand.z, 0.9, colliders).collided,
+      false,
+      `Auto stand "${stand.id}" must not clip into any building`,
+    );
+  }
+  for (const bay of PARKING_BAYS) {
+    if (bay.id === 'park_airport_apron') continue;
+    assert.equal(
+      isPointOnAnyRoad(bay.x, bay.z, 0.1),
+      false,
+      `Parking bay "${bay.id}" at (${bay.x}, ${bay.z}) must sit beside, not inside, a paved traffic lane`,
+    );
+    assert.equal(
+      resolveCircleWorldCollision(bay.x, bay.z, 0.9, colliders).collided,
+      false,
+      `Parking bay "${bay.id}" must not clip inside a building collider`,
+    );
+  }
+  for (const col of WORLD_COLLECTIBLES) {
+    assert.equal(
+      isPointOnAnyRoad(col.x, col.z, 0.2),
+      false,
+      `Collectible "${col.id}" at (${col.x}, ${col.z}) must not sit inside traffic lanes`,
+    );
+    assert.equal(
+      resolveCircleWorldCollision(col.x, col.z, 0.45, colliders).collided,
+      false,
+      `Collectible "${col.id}" must not clip inside a building collider`,
+    );
+  }
+
+  // 5. Foot-Overbridge Common-Sense Elevation: walking underneath at y=0 NEVER teleports up 4.9m,
+  // while climbing the staircase smoothly ascends to BRIDGE_DECK_Y (4.9m)!
+  const st0 = RAILWAY_STATIONS[0];
+  const underBridge = stationLocalToWorld(st0, 0, 0);
+  assert.ok(
+    sampleWorldSurface(underBridge.x, underBridge.z, 0).groundY < 0.2,
+    'Walking underneath Foot-Overbridge at y=0 must stay at ground level (no sky-teleport!)',
+  );
+  assert.ok(
+    sampleWorldSurface(underBridge.x, underBridge.z, BRIDGE_DECK_Y).groundY >= BRIDGE_DECK_Y - 0.05,
+    'Walking across the Foot-Overbridge at deck height must remain solidly supported at 4.9m',
+  );
+
+  // Simulate stepping up the staircase from bottom (along=11.5) to top landing (along=2.0) on Platform B (outward=+7.0)
+  let stairY = 0.55;
+  for (let along = 11.5; along >= 1.8; along -= 0.7) {
+    const pt = stationLocalToWorld(st0, along, 7.0);
+    stairY = sampleRailwayElevation(pt.x, pt.z, stairY);
+  }
+  assert.ok(
+    stairY >= BRIDGE_DECK_Y - 0.25,
+    `Climbing Foot-Overbridge stairs must smoothly reach deck height (${BRIDGE_DECK_Y}m), reached ${stairY.toFixed(2)}m`,
+  );
+
+  // 6. Deep Arabian Sea surf limit stops walking out into open deep ocean water
+  let swimmer = {
+    x: 0,
+    y: 0,
+    z: BEACH_ZONE.shorelineZ - 1,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    yaw: 0,
+    coyoteTimer: 0.1,
+    jumpBufferTimer: 0,
+  };
+  for (let i = 0; i < 120; i++) {
+    const res = stepCharacterPhysics(
+      swimmer,
+      { moveX: 0, moveZ: 1, running: true },
+      colliders,
+      1 / 60,
+    );
+    swimmer = res;
+  }
+  assert.ok(
+    swimmer.z >= BEACH_ZONE.shorelineZ && swimmer.z <= BEACH_ZONE.shorelineZ + 2.45,
+    `Wading south into Arabian Sea must stop cleanly at waist-deep surf, got z=${swimmer.z.toFixed(2)}`,
+  );
+
+  // 7. Roaming village goat orbit stays 100% clear of all roads and building colliders
+  for (let deg = 0; deg < 360; deg += 15) {
+    const rad = (deg * Math.PI) / 180;
+    const gx = -25 + Math.cos(rad) * 3.4;
+    const gz = 22.5 + Math.sin(rad) * 3.4;
+    assert.equal(isPointOnAnyRoad(gx, gz, 0.4), false, `Roaming goat at (${gx.toFixed(1)}, ${gz.toFixed(1)}) touched road`);
+    assert.equal(
+      resolveCircleWorldCollision(gx, gz, 0.55, colliders).collided,
+      false,
+      `Roaming goat at (${gx.toFixed(1)}, ${gz.toFixed(1)}) clipped building`,
+    );
+  }
+});
+
+test('Kerala ambient audio weights temple bells, tea stall chatter, monsoon rain, coastal waves, crickets, and airport hum by district, time of day, and weather', () => {
+  const weightOf = (pool: ReturnType<typeof getAmbientSoundPool>, id: string) =>
+    pool.find((e) => e.id === id)?.weight ?? 0;
+
+  // 1. District classification maps every Kerala town zone cleanly
+  assert.equal(classifyDistrictAmbientZone('Main Junction'), 'bazaar');
+  assert.equal(classifyDistrictAmbientZone('Sweet Street'), 'bazaar');
+  assert.equal(classifyDistrictAmbientZone('Palm Colony'), 'grove');
+  assert.equal(classifyDistrictAmbientZone('Malabar Golden Beach'), 'coastal');
+  assert.equal(classifyDistrictAmbientZone('Marine Drive Beach'), 'coastal');
+  assert.equal(classifyDistrictAmbientZone('Kerala International Airport'), 'airport');
+  assert.equal(classifyDistrictAmbientZone('Hospital Square'), 'civic');
+
+  // 2. Daytime Main Junction features tea stall chatter, temple bells & bazaar horn (no night crickets / airport jet)
+  const bazaarDay = getAmbientSoundPool({
+    district: 'Main Junction',
+    timePhase: 'day',
+    weather: 'sunny',
+  });
+  assert.ok(weightOf(bazaarDay, 'tea_stall_chatter') > 2.5);
+  assert.ok(weightOf(bazaarDay, 'temple_bells') > 1.0);
+  assert.ok(weightOf(bazaarDay, 'bazaar_distant_horn') > 1.0);
+  assert.equal(weightOf(bazaarDay, 'night_crickets'), 0);
+  assert.equal(weightOf(bazaarDay, 'airport_jet_hum'), 0);
+
+  // 3. Sunset (Kerala Sandhya) peaks temple bells in both Palm Colony and Main Junction
+  const groveSunset = getAmbientSoundPool({
+    district: 'Palm Colony',
+    timePhase: 'sunset',
+    weather: 'sunny',
+  });
+  const groveDay = getAmbientSoundPool({
+    district: 'Palm Colony',
+    timePhase: 'day',
+    weather: 'sunny',
+  });
+  assert.ok(
+    weightOf(groveSunset, 'temple_bells') > weightOf(groveDay, 'temple_bells'),
+    'Sunset should peak distant temple bells compared to midday',
+  );
+
+  // 4. Nighttime shifts Palm Colony to night crickets and drops daytime tropical birds
+  const groveNight = getAmbientSoundPool({
+    district: 'Palm Colony',
+    timePhase: 'night',
+    weather: 'sunny',
+  });
+  assert.ok(weightOf(groveNight, 'night_crickets') >= 3.5);
+  assert.equal(weightOf(groveNight, 'tropical_birds'), 0);
+
+  // 5. Monsoon heavily prioritizes monsoon_rain, dampens chatter/birds, and triggers more frequently than sunny
+  const bazaarMonsoon = getAmbientSoundPool({
+    district: 'Main Junction',
+    timePhase: 'day',
+    weather: 'monsoon',
+  });
+  assert.ok(
+    weightOf(bazaarMonsoon, 'monsoon_rain') > weightOf(bazaarMonsoon, 'tea_stall_chatter'),
+    'Monsoon weather should prioritize monsoon rain ambience over tea stall chatter',
+  );
+  assert.ok(
+    weightOf(bazaarMonsoon, 'tea_stall_chatter') < weightOf(bazaarDay, 'tea_stall_chatter'),
+    'Monsoon weather should dampen outdoor tea stall chatter',
+  );
+  assert.ok(
+    computeNextAmbientIntervalSec({ district: 'Main Junction', timePhase: 'day', weather: 'monsoon' }, () => 0.5) <
+      computeNextAmbientIntervalSec({ district: 'Main Junction', timePhase: 'day', weather: 'sunny' }, () => 0.5),
+  );
+
+  // 6. Coastal beach zones prioritize coastal_waves; Airport prioritizes airport_jet_hum
+  const beachSunset = getAmbientSoundPool({
+    district: 'Malabar Golden Beach',
+    timePhase: 'sunset',
+    weather: 'sunny',
+  });
+  assert.ok(weightOf(beachSunset, 'coastal_waves') >= 3.0);
+
+  const airportDay = getAmbientSoundPool({
+    district: 'Kerala International Airport',
+    timePhase: 'day',
+    weather: 'sunny',
+  });
+  assert.ok(weightOf(airportDay, 'airport_jet_hum') >= 3.0);
+
+  // 7. Indoors (Hospital) and airborne flight suppress outdoor ambient cues completely
+  assert.deepEqual(
+    getAmbientSoundPool({ district: 'Hospital Square', timePhase: 'day', weather: 'monsoon', indoors: true }),
+    [],
+  );
+  assert.deepEqual(
+    getAmbientSoundPool({ district: 'Kerala International Airport', timePhase: 'day', weather: 'sunny', airborne: true }),
+    [],
+  );
+
+  // 8. Anti-repeat damping lowers immediate repeat frequency across deterministic sweep
+  const ctxDay = { district: 'Main Junction', timePhase: 'day' as const, weather: 'sunny' as const };
+  let repeatsWithLast = 0;
+  let picksWithoutLast = 0;
+  for (let i = 0; i < 100; i++) {
+    const r = i / 100;
+    if (pickWeightedAmbientSound(ctxDay, 'tea_stall_chatter', () => r) === 'tea_stall_chatter') {
+      repeatsWithLast++;
+    }
+    if (pickWeightedAmbientSound(ctxDay, null, () => r) === 'tea_stall_chatter') {
+      picksWithoutLast++;
+    }
+  }
+  assert.ok(
+    repeatsWithLast < picksWithoutLast,
+    `Anti-repeat damping must reduce repeat picks (${repeatsWithLast} vs ${picksWithoutLast})`,
+  );
+
+  // 9. Scheduler pauses when inactive/indoors, triggers cleanly once cooldown elapses, and updates state
+  const sched = createInitialAmbientSchedulerState(2.0);
+  const paused = stepAmbientScheduler(sched, 5.0, ctxDay, false, () => 0.5);
+  assert.equal(paused.triggeredSound, null);
+  assert.equal(paused.state.cooldownSec, 2.0);
+
+  const indoorStep = stepAmbientScheduler(
+    sched,
+    5.0,
+    { ...ctxDay, indoors: true },
+    true,
+    () => 0.5,
+  );
+  assert.equal(indoorStep.triggeredSound, null);
+
+  const half = stepAmbientScheduler(sched, 1.2, ctxDay, true, () => 0.5);
+  assert.equal(half.triggeredSound, null);
+  assert.ok(Math.abs(half.state.cooldownSec - 0.8) < 0.001);
+
+  const fired = stepAmbientScheduler(half.state, 1.0, ctxDay, true, () => 0.2);
+  assert.ok(fired.triggeredSound !== null, 'Expected ambient sound trigger when cooldown reaches 0');
+  assert.equal(fired.state.lastSoundId, fired.triggeredSound);
+  assert.equal(fired.state.triggerCount, 1);
+  assert.ok(fired.state.cooldownSec >= 6.8 && fired.state.cooldownSec <= 13.5);
+});
+
+
 
 
 

@@ -235,12 +235,27 @@ export function createArabianSeaAndBeach(): ArabianSeaRig {
   promenade.receiveShadow = true;
   group.add(promenade);
 
-  // Decorative coastal wooden handrail border along promenade
+  // Decorative coastal wooden handrail border along promenade (with grounded vertical support posts!)
   const railMat = new THREE.MeshStandardMaterial({ color: 0x8d5524, roughness: 0.7 });
+  const railPostMat = new THREE.MeshStandardMaterial({ color: 0x6b3e1a, roughness: 0.78 });
+  const railZ = BEACH_ZONE.boardwalkZ - 3.1;
+  const postGeo = new THREE.BoxGeometry(0.16, 0.98, 0.16);
   for (const segX of [-30, 30]) {
-    const rail = new THREE.Mesh(new THREE.BoxGeometry(34, 0.1, 0.14), railMat);
-    rail.position.set(segX, 0.95, BEACH_ZONE.boardwalkZ - 3.1);
-    group.add(rail);
+    const topRail = new THREE.Mesh(new THREE.BoxGeometry(34, 0.1, 0.14), railMat);
+    topRail.position.set(segX, 0.95, railZ);
+    group.add(topRail);
+
+    const midRail = new THREE.Mesh(new THREE.BoxGeometry(34, 0.08, 0.1), railMat);
+    midRail.position.set(segX, 0.52, railZ);
+    group.add(midRail);
+
+    // Anchor 9 sturdy vertical posts evenly along each 34m rail span (every 4.25m)
+    for (let p = 0; p <= 8; p++) {
+      const px = segX - 17 + p * 4.25;
+      const post = new THREE.Mesh(postGeo, railPostMat);
+      post.position.set(px, 0.49, railZ);
+      group.add(post);
+    }
   }
 
   // Kerala Beach Welcome Arch at Beachfront Parking entrance (cleanly behind promenade so sea view is 100% open!)

@@ -92,6 +92,7 @@ import {
   evaluateAirplaneHazard,
   isAircraftType,
   isPointOnAirportTarmac,
+  isPointOnRunway,
   mapMobileFlightCursor,
   stepAirplanePhysics,
 } from './vehiclePhysics';
@@ -128,8 +129,10 @@ import {
   computeRoadAutopilotTarget,
   computeSirenYieldBehavior,
   constrainVehicleToDrivableRoads,
+  detectCurrentRoadName,
   getRoadBounds,
   getRoadNameAt,
+  isPointOnAnyRoad,
   snapPointToNearestRoad,
 } from './roadNetwork';
 import { VehicleModelRig, createDetailedVehicleModel } from './vehicleModels';
@@ -185,6 +188,7 @@ import {
 } from './lodSystem';
 import {
   BEACH_BENCHES,
+  BEACH_ZONE,
   PLATFORM_CENTER_OFFSET,
   RAILWAY_STATIONS,
   RailwaySimulationState,
@@ -213,7 +217,7 @@ import {
   createWesternGhatsMountains,
   updateKeralaTrainRigTransform,
 } from './railwayModels';
-import { soundEngine } from './audio';
+import { AmbientContext, soundEngine } from './audio';
 
 // Module-level zero-GC scratch helpers
 const _v1 = new THREE.Vector3();
@@ -235,6 +239,13 @@ const _weatherFog = new THREE.Color();
 const _roadTintTarget = new THREE.Color();
 const _puddleTint = new THREE.Color();
 const _sunDirWork = new THREE.Vector3();
+const _ambientCtx: AmbientContext = {
+  district: 'Main Junction',
+  timePhase: 'day',
+  weather: 'sunny',
+  indoors: false,
+  airborne: false,
+};
 
 function freezeStaticHierarchy(obj: THREE.Object3D): void {
   obj.updateMatrixWorld(true);
@@ -530,6 +541,7 @@ export class ThreeWorld {
   private liveVehicles: LiveVehicle[] = [];
   private aiTraffic: AiTrafficVehicle[] = [];
   private trafficLights: { rig: TrafficLightRig; axis: 'ns' | 'ew' }[] = [];
+  private streetPoleCoords: { x: number; z: number; radius: number }[] = [];
   private trafficLightCycle = 0;
   private trafficLightState: 'ns_green' | 'ew_green' | 'yellow' = 'ns_green';
   private livePalms: LiveCoconutPalm[] = [];
@@ -1191,13 +1203,13 @@ export class ThreeWorld {
     // Streetlamps along main roads (4 key night point lights + emissive bulbs)
     const lampCoords: [number, number, number][] = [
       [-6.8, -14, 0],
-      [6.8, -14, Math.PI],
-      [-6.8, 6, 0],
-      [6.8, 6, Math.PI],
+      [6.8, -20.5, Math.PI],
+      [-6.8, 10.8, 0],
+      [6.8, 10.8, Math.PI],
       [-24, -10.5, Math.PI / 2],
       [24, -10.5, Math.PI / 2],
-      [-6.8, -28, 0],
-      [6.8, -28, Math.PI],
+      [-6.8, -26.2, 0],
+      [6.8, -26.2, Math.PI],
       [-26, 2.5, -Math.PI / 2],
       [26, 2.5, -Math.PI / 2],
       [-70, -18, Math.PI],
@@ -1213,6 +1225,7 @@ export class ThreeWorld {
       group.rotation.y = rot;
       this.scene.add(group);
       this.lampBulbMats.push(bulbMat);
+      this.streetPoleCoords.push({ x: lx, z: lz, radius: 0.28 });
       this.lodPropEntries.push({ x: lx, z: lz, object: group, visible: true, isLarge: false });
 
       if (idx < 4) {
@@ -1264,12 +1277,18 @@ export class ThreeWorld {
     this.scene.add(createZebraCrossing(11.2, -4, Math.PI / 2));
     this.scene.add(createZebraCrossing(-11.2, -4, Math.PI / 2));
 
-    // 4 Junction Traffic Lights
-    const tl1 = createTrafficLightModel(-6.6, -11.5, 0);
-    const tl2 = createTrafficLightModel(6.6, 3.5, Math.PI);
-    const tl3 = createTrafficLightModel(7.8, -10.5, -Math.PI / 2);
-    const tl4 = createTrafficLightModel(-7.8, 2.5, Math.PI / 2);
+    // 4 Junction Traffic Lights (strictly outside the 10.6m roundabout asphalt circle & sidewalks!)
+    const tl1 = createTrafficLightModel(-6.8, -12.6, 0);
+    const tl2 = createTrafficLightModel(6.8, 4.6, Math.PI);
+    const tl3 = createTrafficLightModel(8.8, -11.0, -Math.PI / 2);
+    const tl4 = createTrafficLightModel(-8.8, 3.0, Math.PI / 2);
     this.scene.add(tl1.group, tl2.group, tl3.group, tl4.group);
+    this.streetPoleCoords.push(
+      { x: -6.8, z: -12.6, radius: 0.34 },
+      { x: 6.8, z: 4.6, radius: 0.34 },
+      { x: 8.8, z: -11.0, radius: 0.34 },
+      { x: -8.8, z: 3.0, radius: 0.34 },
+    );
     this.trafficLights.push(
       { rig: tl1, axis: 'ns' },
       { rig: tl2, axis: 'ns' },
@@ -3467,6 +3486,63 @@ export class ThreeWorld {
       });
     }
 
+    // Solid street fixtures: traffic light & streetlamp steel poles, ad boards, bus stop back walls & auto stand frames
+    for (let i = 0; i < this.streetPoleCoords.length; i++) {
+      const pole = this.streetPoleCoords[i];
+      const dx = pole.x - cx;
+      const dz = pole.z - cz;
+      if (dx * dx + dz * dz > maxRangeSq) continue;
+      circles.push({ cx: pole.x, cz: pole.z, radius: pole.radius, minY: 0, maxY: 5.2 });
+    }
+    for (let i = 0; i < AD_BOARDS.length; i++) {
+      const board = AD_BOARDS[i];
+      const dx = board.x - cx;
+      const dz = board.z - cz;
+      if (dx * dx + dz * dz > maxRangeSq) continue;
+      obbs.push({
+        cx: board.x,
+        cz: board.z,
+        halfW: 1.25,
+        halfL: 0.36,
+        yaw: board.rotationY,
+        minY: 0,
+        maxY: 3.4,
+      });
+    }
+    for (let i = 0; i < BUS_STOPS.length; i++) {
+      const stop = BUS_STOPS[i];
+      const dx = stop.x - cx;
+      const dz = stop.z - cz;
+      if (dx * dx + dz * dz > maxRangeSq) continue;
+      // Solid rear wall of bus stop shelter (keeps front waiting shelter open to walk in!)
+      const backOffsetX = -Math.sin(stop.rotationY) * 0.68;
+      const backOffsetZ = -Math.cos(stop.rotationY) * 0.68;
+      obbs.push({
+        cx: stop.x + backOffsetX,
+        cz: stop.z + backOffsetZ,
+        halfW: 1.75,
+        halfL: 0.22,
+        yaw: stop.rotationY,
+        minY: 0,
+        maxY: 2.7,
+      });
+    }
+    for (let i = 0; i < AUTO_STANDS.length; i++) {
+      const stand = AUTO_STANDS[i];
+      const dx = stand.x - cx;
+      const dz = stand.z - cz;
+      if (dx * dx + dz * dz > maxRangeSq) continue;
+      obbs.push({
+        cx: stand.x,
+        cz: stand.z,
+        halfW: 1.45,
+        halfL: 0.42,
+        yaw: stand.rotationY,
+        minY: 0,
+        maxY: 2.6,
+      });
+    }
+
     // Solid NPC & Town Crowd bodies (characters cannot walk straight through people)
     for (let i = 0; i < this.liveNpcs.length; i++) {
       const n = this.liveNpcs[i];
@@ -3671,6 +3747,26 @@ export class ThreeWorld {
     } else {
       this.lightningFlash = 0;
     }
+
+    // Dynamic Kerala-inspired ambient audio (temple bells, tea stall chatter, monsoon rain, waves, crickets)
+    const activeVehForAmbient = this.activeVehicleId
+      ? this.liveVehicles.find((v) => v.id === this.activeVehicleId)
+      : null;
+    _ambientCtx.district = isPointOnBeachZone(this.playerX, this.playerZ)
+      ? 'Malabar Golden Beach'
+      : getDistrictAt(this.playerX, this.playerZ);
+    _ambientCtx.timePhase = phase;
+    _ambientCtx.weather = this.weatherState.condition;
+    _ambientCtx.indoors = this.inHospital;
+    _ambientCtx.airborne = Boolean(
+      activeVehForAmbient?.isAircraft &&
+        (activeVehForAmbient.flightState === 'airborne' || activeVehForAmbient.y > 3.5),
+    );
+    soundEngine.updateAmbient(
+      dt,
+      _ambientCtx,
+      this.mode === 'playing' && !this.modalOpen && !this.photoModeActive,
+    );
 
     const lightLerp = 1 - Math.exp(-5.2 * dt);
     const targetSun = baseSunIntensity * weatherCfg.sunIntensityMult + this.lightningFlash * 0.85;
@@ -4677,17 +4773,26 @@ export class ThreeWorld {
       }
     }
 
-    // Coconut Lagoon Pool & Resort Swimming Splash!
+    // Coconut Lagoon Pool & Arabian Sea Shoreline Surf Splash!
     const nowInPool =
       this.playerX >= RESORT_POOL_BOUNDS.minX &&
       this.playerX <= RESORT_POOL_BOUNDS.maxX &&
       this.playerZ >= RESORT_POOL_BOUNDS.minZ &&
       this.playerZ <= RESORT_POOL_BOUNDS.maxZ;
+    const nowInSeaSurf =
+      this.playerZ >= BEACH_ZONE.shorelineZ - 0.5 &&
+      Math.abs(this.playerX) <= BEACH_ZONE.maxX + 10;
     this.inPool = nowInPool;
-    if (nowInPool && this.poolSplashCooldown <= 0 && moveSpeed > 0.2) {
+    if ((nowInPool || nowInSeaSurf) && this.poolSplashCooldown <= 0 && moveSpeed > 0.2) {
       this.poolSplashCooldown = 0.65;
       soundEngine.playSplash();
-      this.spawnParticleBurst(this.playerX, 0.45, this.playerZ, 8, 0x38bdf8);
+      this.spawnParticleBurst(
+        this.playerX,
+        0.45,
+        this.playerZ,
+        8,
+        nowInSeaSurf ? 0xe0f2fe : 0x38bdf8,
+      );
     }
 
     // Standing Under Coconut Trees -> Shakes Palm & Drops 3D Coconut -> Call 108 Ambulance!
@@ -4979,11 +5084,29 @@ export class ThreeWorld {
           amb.speed = Math.abs(diff) > 0.6 ? 5 : Math.min(28, Math.max(14, dist * 2.0));
           const nx = amb.x + Math.sin(amb.yaw) * amb.speed * dt;
           const nz = amb.z + Math.cos(amb.yaw) * amb.speed * dt;
-          const safe = resolveCircleWorldCollision(nx, nz, 1.5, this.colliders);
+          const safe = resolveCircleWorldCollision(nx, nz, 1.55, this.colliders);
           if (safe.collided) {
-            // Slide cleanly around any roadside obstacle so ambulance always reaches the scene
-            amb.x += (dx / dist) * 8 * dt;
-            amb.z += (dz / dist) * 8 * dt;
+            // Slide tangentially around building corners — NEVER ghost straight through walls!
+            const slideX = resolveCircleWorldCollision(nx, amb.z, 1.55, this.colliders);
+            const slideZ = resolveCircleWorldCollision(amb.x, nz, 1.55, this.colliders);
+            const dX = Math.hypot(
+              this.emergencyDispatch.targetX - slideX.x,
+              this.emergencyDispatch.targetZ - slideX.z,
+            );
+            const dZ = Math.hypot(
+              this.emergencyDispatch.targetX - slideZ.x,
+              this.emergencyDispatch.targetZ - slideZ.z,
+            );
+            if (!slideX.collided && (slideZ.collided || dX <= dZ)) {
+              amb.x = slideX.x;
+              amb.z = slideX.z;
+            } else if (!slideZ.collided) {
+              amb.x = slideZ.x;
+              amb.z = slideZ.z;
+            } else {
+              amb.x = safe.x;
+              amb.z = safe.z;
+            }
           } else {
             amb.x = safe.x;
             amb.z = safe.z;
@@ -5052,8 +5175,26 @@ export class ThreeWorld {
             const diff = Math.atan2(Math.sin(targetYaw - fe.yaw), Math.cos(targetYaw - fe.yaw));
             fe.yaw += THREE.MathUtils.clamp(diff, -4.8 * dt, 4.8 * dt);
             fe.speed = Math.min(24, Math.max(12, dist * 1.8));
-            fe.x += Math.sin(fe.yaw) * fe.speed * dt;
-            fe.z += Math.cos(fe.yaw) * fe.speed * dt;
+            const fnx = fe.x + Math.sin(fe.yaw) * fe.speed * dt;
+            const fnz = fe.z + Math.cos(fe.yaw) * fe.speed * dt;
+            const fSafe = resolveCircleWorldCollision(fnx, fnz, 1.65, this.colliders);
+            if (fSafe.collided) {
+              const fSlideX = resolveCircleWorldCollision(fnx, fe.z, 1.65, this.colliders);
+              const fSlideZ = resolveCircleWorldCollision(fe.x, fnz, 1.65, this.colliders);
+              if (!fSlideX.collided) {
+                fe.x = fSlideX.x;
+                fe.z = fSlideX.z;
+              } else if (!fSlideZ.collided) {
+                fe.x = fSlideZ.x;
+                fe.z = fSlideZ.z;
+              } else {
+                fe.x = fSafe.x;
+                fe.z = fSafe.z;
+              }
+            } else {
+              fe.x = fSafe.x;
+              fe.z = fSafe.z;
+            }
             fe.mesh.position.set(fe.x, 0, fe.z);
             fe.mesh.rotation.y = fe.yaw;
             for (const w of fe.rig.wheels) w.rotation.x += fe.speed * dt * 2.2;
@@ -5182,15 +5323,77 @@ export class ThreeWorld {
           targetSpeed *= 0.28;
         }
 
-        // Slow down cleanly if player vehicle is right in front
+        // Forward bumper-to-bumper safety radar: brake cleanly for other AI traffic, parked ground vehicles & player!
+        const aiFwdX = Math.sin(ai.yaw);
+        const aiFwdZ = Math.cos(ai.yaw);
+        const aiRightX = Math.cos(ai.yaw);
+        const aiRightZ = -Math.sin(ai.yaw);
+
         const distPlayer = Math.hypot(ai.x - this.playerX, ai.z - this.playerZ);
-        if (distPlayer < 6.5 && this.activeVehicleId) {
-          targetSpeed *= 0.25;
+        if (distPlayer < 8.5 && this.activeVehicleId) {
+          const pdx = this.playerX - ai.x;
+          const pdz = this.playerZ - ai.z;
+          const pFwd = pdx * aiFwdX + pdz * aiFwdZ;
+          const pLat = Math.abs(pdx * aiRightX + pdz * aiRightZ);
+          if (pFwd > 0.5 && pLat < 2.6) {
+            targetSpeed = pFwd < 5.4 ? 0 : targetSpeed * 0.22;
+          }
         }
 
-        ai.speed += (targetSpeed - ai.speed) * Math.min(1, dt * 4.8);
-        ai.x += Math.sin(ai.yaw) * ai.speed * dt;
-        ai.z += Math.cos(ai.yaw) * ai.speed * dt;
+        // Check other AI traffic vehicles directly ahead in our lane
+        if (targetSpeed > 0.1) {
+          for (let j = 0; j < this.aiTraffic.length; j++) {
+            const other = this.aiTraffic[j];
+            if (other === ai || !other.active) continue;
+            const odx = other.x - ai.x;
+            const odz = other.z - ai.z;
+            if (odx * odx + odz * odz > 121) continue;
+            const oFwd = odx * aiFwdX + odz * aiFwdZ;
+            const oLat = Math.abs(odx * aiRightX + odz * aiRightZ);
+            const minGap = ai.isBus || other.isBus ? 8.2 : 6.4;
+            if (oFwd > 0.8 && oFwd < minGap + 3.2 && oLat < 2.15) {
+              targetSpeed = oFwd < minGap ? 0 : Math.min(targetSpeed, other.speed * 0.75);
+              if (targetSpeed === 0) break;
+            }
+          }
+        }
+
+        // Check parked ground liveVehicles ahead on our lane so AI traffic never ghosts through parked cars/buses
+        if (targetSpeed > 0.1) {
+          for (let j = 0; j < this.liveVehicles.length; j++) {
+            const lv = this.liveVehicles[j];
+            if (!lv.mesh.visible || lv.isAircraft || lv.id === this.activeVehicleId) continue;
+            const ldx = lv.x - ai.x;
+            const ldz = lv.z - ai.z;
+            if (ldx * ldx + ldz * ldz > 100) continue;
+            const lFwd = ldx * aiFwdX + ldz * aiFwdZ;
+            const lLat = Math.abs(ldx * aiRightX + ldz * aiRightZ);
+            if (lFwd > 0.8 && lFwd < 8.5 && lLat < 2.2) {
+              targetSpeed = lFwd < 5.8 ? 0 : targetSpeed * 0.25;
+              if (targetSpeed === 0) break;
+            }
+          }
+        }
+
+        ai.speed += (targetSpeed - ai.speed) * Math.min(1, dt * 5.6);
+        const nextAiX = ai.x + aiFwdX * ai.speed * dt;
+        const nextAiZ = ai.z + aiFwdZ * ai.speed * dt;
+        // Keep AI traffic clear of Golden Sheru Statue pedestal at (0, -4)
+        const dStatue = Math.hypot(
+          nextAiX - SHERU_STATUE_ROUNDABOUT.x,
+          nextAiZ - SHERU_STATUE_ROUNDABOUT.z,
+        );
+        if (dStatue < SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.35) {
+          const ang = Math.atan2(
+            nextAiX - SHERU_STATUE_ROUNDABOUT.x,
+            nextAiZ - SHERU_STATUE_ROUNDABOUT.z,
+          );
+          ai.x = SHERU_STATUE_ROUNDABOUT.x + Math.sin(ang) * (SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.38);
+          ai.z = SHERU_STATUE_ROUNDABOUT.z + Math.cos(ang) * (SHERU_STATUE_ROUNDABOUT.pedestalRadius + 1.38);
+        } else {
+          ai.x = nextAiX;
+          ai.z = nextAiZ;
+        }
 
         ai.rig.root.position.set(ai.x, 0, ai.z);
         ai.rig.root.rotation.y = ai.yaw;
@@ -5292,6 +5495,24 @@ export class ThreeWorld {
       });
     }
 
+    // Include nearby parked ground vehicles & aircraft so footballs/crates bounce off them solidly
+    for (let i = 0; i < this.liveVehicles.length; i++) {
+      const lv = this.liveVehicles[i];
+      if (!lv.mesh.visible || lv.id === this.activeVehicleId || lv.y > 2.2) continue;
+      if (Math.hypot(lv.x - this.playerX, lv.z - this.playerZ) > 65) continue;
+      this.physicsActorsScratch.push({
+        id: lv.id,
+        x: lv.x,
+        y: lv.y,
+        z: lv.z,
+        vx: 0,
+        vz: 0,
+        radius: lv.isAircraft ? 3.2 : 1.65,
+        mass: lv.mass,
+        kickBoost: 0,
+      });
+    }
+
     const impacts = stepRigidBodyProps(
       this.physicsProps,
       this.physicsActorsScratch,
@@ -5307,7 +5528,7 @@ export class ThreeWorld {
       vis.mesh.position.set(p.x, p.y, p.z);
       vis.mesh.rotation.set(p.rx, p.ry, p.rz);
 
-      const floorY = sampleWorldSurface(p.x, p.z).groundY;
+      const floorY = sampleWorldSurface(p.x, p.z, p.y - p.halfHeight).groundY;
       const heightAbove = Math.max(0, p.y - p.halfHeight - floorY);
       vis.shadow.position.set(p.x, floorY + 0.025, p.z);
       const shadowScale = Math.max(0.42, 1 - heightAbove * 0.14);
@@ -5451,10 +5672,27 @@ export class ThreeWorld {
         if (n.waitTimer > 0) {
           n.waitTimer -= dt;
           if (n.waitTimer <= 0) {
-            const a = Math.random() * Math.PI * 2;
-            const r = Math.random() * n.patrolRadius;
-            n.targetX = n.homeX + Math.cos(a) * r;
-            n.targetZ = n.homeZ + Math.sin(a) * r;
+            // Pick a safe sidewalk patrol target strictly clear of paved roads & building walls
+            let picked = false;
+            for (let attempt = 0; attempt < 6; attempt++) {
+              const a = Math.random() * Math.PI * 2;
+              const r = Math.random() * n.patrolRadius;
+              const tx = n.homeX + Math.cos(a) * r;
+              const tz = n.homeZ + Math.sin(a) * r;
+              if (
+                !isPointOnAnyRoad(tx, tz, 0.5) &&
+                !resolveCircleWorldCollision(tx, tz, 0.55, this.colliders).collided
+              ) {
+                n.targetX = tx;
+                n.targetZ = tz;
+                picked = true;
+                break;
+              }
+            }
+            if (!picked) {
+              n.targetX = n.homeX;
+              n.targetZ = n.homeZ;
+            }
           }
         } else {
           const dx = n.targetX - n.x;
@@ -5464,17 +5702,27 @@ export class ThreeWorld {
             n.waitTimer = 1.5 + Math.random() * 2.5;
           } else {
             const spd = 1.65;
-            n.x += (dx / d) * spd * dt;
-            n.z += (dz / d) * spd * dt;
-            n.yaw = Math.atan2(dx, dz);
-            n.walkPhase += dt * 6;
-            n.rig.root.position.set(n.x, 0, n.z);
-            n.rig.root.rotation.y = n.yaw;
-            const sw = Math.sin(n.walkPhase) * 0.4;
-            n.rig.leftLeg.rotation.x = sw;
-            n.rig.rightLeg.rotation.x = -sw;
-            n.rig.leftArm.rotation.x = -sw * 0.7;
-            n.rig.rightArm.rotation.x = sw * 0.7;
+            const nextX = n.x + (dx / d) * spd * dt;
+            const nextZ = n.z + (dz / d) * spd * dt;
+            const safeNpc = resolveCircleWorldCollision(nextX, nextZ, 0.55, this.colliders);
+            if (safeNpc.collided || isPointOnAnyRoad(safeNpc.x, safeNpc.z, 0.45)) {
+              // Blocked by wall or curb — turn back smoothly toward safe home spot
+              n.targetX = n.homeX;
+              n.targetZ = n.homeZ;
+              n.waitTimer = 0.8;
+            } else {
+              n.x = safeNpc.x;
+              n.z = safeNpc.z;
+              n.yaw = Math.atan2(dx, dz);
+              n.walkPhase += dt * 6;
+              n.rig.root.position.set(n.x, 0, n.z);
+              n.rig.root.rotation.y = n.yaw;
+              const sw = Math.sin(n.walkPhase) * 0.4;
+              n.rig.leftLeg.rotation.x = sw;
+              n.rig.rightLeg.rotation.x = -sw;
+              n.rig.leftArm.rotation.x = -sw * 0.7;
+              n.rig.rightArm.rotation.x = sw * 0.7;
+            }
           }
         }
       }
@@ -5534,11 +5782,16 @@ export class ThreeWorld {
         baseGlow + Math.sin(this.elapsed * 2.4) * 0.14;
     }
 
-    // Mischievous town goat trotting happily around junction / market
-    this.goatAngle += dt * 0.45;
-    const gx = Math.cos(this.goatAngle) * 14 - 4;
-    const gz = Math.sin(this.goatAngle) * 14 - 4;
-    this.roamingGoat.position.set(gx, Math.abs(Math.sin(this.elapsed * 8)) * 0.14, gz);
+    // Mischievous town goat trotting happily around a safe grassy village green (clear of all roads & buildings!)
+    this.goatAngle += dt * 0.48;
+    const rawGx = -25 + Math.cos(this.goatAngle) * 3.4;
+    const rawGz = 22.5 + Math.sin(this.goatAngle) * 3.4;
+    const safeGoat = resolveCircleWorldCollision(rawGx, rawGz, 0.55, this.colliders);
+    this.roamingGoat.position.set(
+      safeGoat.x,
+      Math.abs(Math.sin(this.elapsed * 8)) * 0.14,
+      safeGoat.z,
+    );
     this.roamingGoat.rotation.y = -this.goatAngle;
 
     // Spin visible collectibles (using cached gem refs — zero getObjectByName per frame!)
@@ -6116,6 +6369,15 @@ export class ThreeWorld {
     const activeBench = this.sittingBenchId
       ? BEACH_BENCHES.find((b) => b.id === this.sittingBenchId) ?? null
       : null;
+    const currentRoadName =
+      this.railwayState.riderMode !== 'none'
+        ? null
+        : detectCurrentRoadName(this.playerX, this.playerZ, {
+            inHospital: this.inHospital,
+            airborne: Boolean(activeVeh?.isAircraft && activeVeh.y > 4),
+            onRunway: isPointOnRunway(this.playerX, this.playerZ),
+            onAirportTarmac: isPointOnAirportTarmac(this.playerX, this.playerZ),
+          });
 
     this.callbacks.onHudUpdate({
       playerX: this.playerX,
@@ -6137,6 +6399,7 @@ export class ThreeWorld {
               : activeVeh?.isAircraft && activeVeh.y > 4
                 ? 'Kerala Sky Airspace'
                 : getDistrictAt(this.playerX, this.playerZ),
+      roadName: currentRoadName,
       inVehicleId: this.activeVehicleId,
       inVehicleName: activeVeh?.name ?? null,
       inVehicleIsAircraft: activeVeh?.isAircraft ?? false,
@@ -6202,6 +6465,7 @@ export class ThreeWorld {
         skyCenteredOnCamera:
           this.skyDome.mesh.position.distanceTo(this.camera.position) < 0.05,
         sittingBenchId: this.sittingBenchId,
+        currentRoadName,
         railway: railwayHud,
         trainsCount: this.railwayState.trains.length,
         stationsCount: RAILWAY_STATIONS.length,
@@ -6500,6 +6764,7 @@ export class ThreeWorld {
   public dispose() {
     this.disposed = true;
     soundEngine.stopSiren();
+    soundEngine.resetAmbientScheduler();
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
     window.removeEventListener('resize', this.handleResize);

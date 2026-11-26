@@ -155,11 +155,7 @@ export function isPointOnAnyRoad(x: number, z: number, margin = 0): boolean {
       return true;
     }
   }
-  return false;
-}
-
-export function getRoadNameAt(x: number, z: number, margin = 1.5): string | null {
-  for (const road of TOWN_ROADS) {
+  for (const road of AUX_PAVED_ROADS) {
     const b = getRoadBounds(road);
     if (
       x >= b.minX - margin &&
@@ -167,9 +163,61 @@ export function getRoadNameAt(x: number, z: number, margin = 1.5): string | null
       z >= b.minZ - margin &&
       z <= b.maxZ + margin
     ) {
-      return road.name;
+      return true;
     }
   }
+  return false;
+}
+
+export function getRoadNameAt(x: number, z: number, margin = 1.5): string | null {
+  let bestName: string | null = null;
+  let bestCenterDist = Infinity;
+
+  const inspectList = (roads: readonly RoadSegmentDef[]) => {
+    for (const road of roads) {
+      const b = getRoadBounds(road);
+      if (
+        x >= b.minX - margin &&
+        x <= b.maxX + margin &&
+        z >= b.minZ - margin &&
+        z <= b.maxZ + margin
+      ) {
+        const centerDist = road.axis === 'ns' ? Math.abs(x - road.x) : Math.abs(z - road.z);
+        if (centerDist < bestCenterDist) {
+          bestCenterDist = centerDist;
+          bestName = road.name;
+        }
+      }
+    }
+  };
+
+  inspectList(TOWN_ROADS);
+  inspectList(AUX_PAVED_ROADS);
+  return bestName;
+}
+
+export interface RoadNameDetectOptions {
+  inHospital?: boolean;
+  airborne?: boolean;
+  onRunway?: boolean;
+  onAirportTarmac?: boolean;
+  margin?: number;
+}
+
+/**
+ * Detect the player's current road name from the 3D world position.
+ * Returns null when indoors, flying airborne, or off-road (beach sand / open grass).
+ */
+export function detectCurrentRoadName(
+  x: number,
+  z: number,
+  options: RoadNameDetectOptions = {},
+): string | null {
+  if (options.inHospital || options.airborne) return null;
+  if (options.onRunway) return 'Airport Runway 09/27';
+  const road = getRoadNameAt(x, z, options.margin ?? 2.2);
+  if (road) return road;
+  if (options.onAirportTarmac) return 'Airport Taxiway & Apron';
   return null;
 }
 
@@ -187,6 +235,17 @@ export function doesBoxOverlapAnyRoad(
   const halfD = (width * s + depth * c) / 2;
 
   for (const road of TOWN_ROADS) {
+    const b = getRoadBounds(road);
+    if (
+      x + halfW > b.minX - margin &&
+      x - halfW < b.maxX + margin &&
+      z + halfD > b.minZ - margin &&
+      z - halfD < b.maxZ + margin
+    ) {
+      return road.id;
+    }
+  }
+  for (const road of AUX_PAVED_ROADS) {
     const b = getRoadBounds(road);
     if (
       x + halfW > b.minX - margin &&
@@ -602,7 +661,7 @@ export interface TownCrowdRoute {
  */
 export const TOWN_CROWD_ROUTES: TownCrowdRoute[] = [
   // Main Junction & Central Bazaar (8)
-  { id: 'crowd_mj_1', district: 'Main Junction', ax: -8, az: 3.5, bx: -8, bz: 25, speed: 1.55, shirtColor: 0xfef3c7, lowerColor: 0xffffff, skinColor: 0xb68158 },
+  { id: 'crowd_mj_1', district: 'Main Junction', ax: -7.2, az: 11.5, bx: -7.2, bz: 25, speed: 1.55, shirtColor: 0xfef3c7, lowerColor: 0xffffff, skinColor: 0xb68158 },
   { id: 'crowd_mj_2', district: 'Main Junction', ax: 8, az: 25, bx: 8, bz: 3.5, speed: 1.65, shirtColor: 0x0ea5e9, lowerColor: 0x1e293b, skinColor: 0xc28b62 },
   { id: 'crowd_mj_3', district: 'Main Junction', ax: -26, az: -10.8, bx: -8, bz: -10.8, speed: 1.5, shirtColor: 0xf43f5e, lowerColor: 0xfde047, skinColor: 0xb88055, isSaree: true },
   { id: 'crowd_mj_4', district: 'Main Junction', ax: 8, az: -10.8, bx: 28, bz: -10.8, speed: 1.7, shirtColor: 0x10b981, lowerColor: 0xf8fafc, skinColor: 0xaa734c },
@@ -639,7 +698,7 @@ export const TOWN_CROWD_ROUTES: TownCrowdRoute[] = [
   { id: 'crowd_wc_1', district: 'West Cinema Strip', ax: -83.5, az: -26, bx: -83.5, bz: -11, speed: 1.6, shirtColor: 0xe11d48, lowerColor: 0x1e293b, skinColor: 0xb88158 },
   { id: 'crowd_wc_2', district: 'West Cinema Strip', ax: -83.5, az: 4, bx: -83.5, bz: 26, speed: 1.55, shirtColor: 0x2563eb, lowerColor: 0xf8fafc, skinColor: 0xc28b62 },
   { id: 'crowd_wc_3', district: 'West Cinema Strip', ax: -83.5, az: 42, bx: -83.5, bz: 63, speed: 1.5, shirtColor: 0x9333ea, lowerColor: 0xfde047, skinColor: 0xb47d54, isSaree: true },
-  { id: 'crowd_fw_1', district: 'Far West Turf Blvd', ax: -114.5, az: -28, bx: -114.5, bz: -11, speed: 1.75, shirtColor: 0x16a34a, lowerColor: 0xfacc15, skinColor: 0xaa734c },
+  { id: 'crowd_fw_1', district: 'Far West Turf Blvd', ax: -114.5, az: -52, bx: -114.5, bz: -30, speed: 1.75, shirtColor: 0x16a34a, lowerColor: 0xfacc15, skinColor: 0xaa734c },
   { id: 'crowd_fw_2', district: 'Far West Turf Blvd', ax: -114.5, az: 5, bx: -114.5, bz: 30, speed: 1.5, shirtColor: 0xd97706, lowerColor: 0xf8fafc, skinColor: 0xc08960, isSaree: true },
   { id: 'crowd_fw_3', district: 'Far West Turf Blvd', ax: -101.6, az: -26, bx: -101.6, bz: -11, speed: 1.6, shirtColor: 0x0ea5e9, lowerColor: 0x0f172a, skinColor: 0xb68057 },
 
@@ -647,7 +706,7 @@ export const TOWN_CROWD_ROUTES: TownCrowdRoute[] = [
   { id: 'crowd_ep_1', district: 'East Promenade', ax: 86.5, az: -26, bx: 86.5, bz: -11, speed: 1.6, shirtColor: 0x0d9488, lowerColor: 0xf8fafc, skinColor: 0xbc865d },
   { id: 'crowd_ep_2', district: 'East Promenade', ax: 86.5, az: 4, bx: 86.5, bz: 26, speed: 1.55, shirtColor: 0xf97316, lowerColor: 0x1e293b, skinColor: 0xb17a51 },
   { id: 'crowd_ep_3', district: 'East Promenade', ax: 86.5, az: 42, bx: 86.5, bz: 63, speed: 1.5, shirtColor: 0xec4899, lowerColor: 0xfef3c7, skinColor: 0xc18a61, isSaree: true },
-  { id: 'crowd_eh_1', district: 'East Harbourfront', ax: 114.5, az: -28, bx: 114.5, bz: -11, speed: 1.65, shirtColor: 0x0284c7, lowerColor: 0xf8fafc, skinColor: 0xac764f },
+  { id: 'crowd_eh_1', district: 'East Harbourfront', ax: 114.5, az: -52, bx: 114.5, bz: -30, speed: 1.65, shirtColor: 0x0284c7, lowerColor: 0xf8fafc, skinColor: 0xac764f },
   { id: 'crowd_eh_2', district: 'East Harbourfront', ax: 114.5, az: 5, bx: 114.5, bz: 30, speed: 1.55, shirtColor: 0x4f46e5, lowerColor: 0xfef08a, skinColor: 0xb98259, isSaree: true },
   { id: 'crowd_eh_3', district: 'East Harbourfront', ax: 100, az: 40, bx: 100, bz: 63, speed: 1.5, shirtColor: 0x15803d, lowerColor: 0xf8fafc, skinColor: 0xc28b62 },
 
@@ -662,8 +721,8 @@ export const TOWN_CROWD_ROUTES: TownCrowdRoute[] = [
   // South Coastal Blvd & Marine Drive Beach (4)
   { id: 'crowd_sc_1', district: 'South Coastal Blvd', ax: -54, az: 79.5, bx: -12, bz: 79.5, speed: 1.55, shirtColor: 0xd97706, lowerColor: 0xf8fafc, skinColor: 0xb88158 },
   { id: 'crowd_sc_2', district: 'South Coastal Blvd', ax: 12, az: 79.5, bx: 58, bz: 79.5, speed: 1.65, shirtColor: 0x0ea5e9, lowerColor: 0x0f172a, skinColor: 0xc28b62 },
-  { id: 'crowd_md_1', district: 'Marine Drive Beach', ax: -52, az: 112, bx: -10, bz: 112, speed: 1.45, shirtColor: 0xf43f5e, lowerColor: 0xfef08a, skinColor: 0xbb855c, isSaree: true },
-  { id: 'crowd_md_2', district: 'Marine Drive Beach', ax: 10, az: 111, bx: 52, bz: 111, speed: 1.55, shirtColor: 0x10b981, lowerColor: 0xf8fafc, skinColor: 0xb17a51 },
+  { id: 'crowd_md_1', district: 'Marine Drive Beach', ax: -38, az: 112, bx: -10, bz: 112, speed: 1.45, shirtColor: 0xf43f5e, lowerColor: 0xfef08a, skinColor: 0xbb855c, isSaree: true },
+  { id: 'crowd_md_2', district: 'Marine Drive Beach', ax: 10, az: 111, bx: 38, bz: 111, speed: 1.55, shirtColor: 0x10b981, lowerColor: 0xf8fafc, skinColor: 0xb17a51 },
 ];
 
 export interface RoadTrafficRouteDef {
